@@ -16,7 +16,8 @@ export async function createWorkspace(profile: SiteProfile, jobId: string, branc
   const dir = workspacePath(jobId);
   const repo = profile.repo.path;
 
-  await removeWorkspace(profile, jobId);
+  // Clears a stale branch of the same name too, or `worktree add -b` would refuse.
+  await removeWorkspace(profile, jobId, branch);
   await mkdir(dirname(dir), { recursive: true });
 
   await run('git', ['fetch', profile.repo.baseRemote, '--prune'], { cwd: repo });
@@ -39,10 +40,20 @@ async function hideRunnerArtifacts(dir: string): Promise<void> {
   await writeFile(join(scratch, '.gitignore'), '*\n');
 }
 
-/** Removes a Job's worktree and its branch registration. Safe to call when absent. */
-export async function removeWorkspace(profile: SiteProfile, jobId: string): Promise<void> {
+/**
+ * Removes a Job's worktree and, when known, the local branch that went with it. Safe to
+ * call when either is already gone. Removing a worktree does not delete its branch, so
+ * without this every finished Job would leave one behind in the human's checkout.
+ */
+export async function removeWorkspace(
+  profile: SiteProfile,
+  jobId: string,
+  branch?: string | null,
+): Promise<void> {
   const dir = workspacePath(jobId);
   await tryRun('git', ['worktree', 'remove', '--force', dir], { cwd: profile.repo.path });
   await rm(dir, { recursive: true, force: true });
   await tryRun('git', ['worktree', 'prune'], { cwd: profile.repo.path });
+
+  if (branch) await tryRun('git', ['branch', '-D', branch], { cwd: profile.repo.path });
 }

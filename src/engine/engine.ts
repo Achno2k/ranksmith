@@ -243,7 +243,7 @@ export class Engine {
   /** Failed Jobs keep their Workspace for inspection; finished ones do not. */
   async #teardown(job: Job): Promise<void> {
     await this.#stopPreview(job.id);
-    await removeWorkspace(this.#profile, job.id);
+    await removeWorkspace(this.#profile, job.id, job.branch);
   }
 
   async #stopPreview(jobId: string): Promise<void> {
