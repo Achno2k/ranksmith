@@ -1,0 +1,48 @@
+{
+  "id": "connectmachine",
+  "jobPrefix": "CM",
+  "repo": {
+    "path": "/Users/amansingh/LambdaTest/website",
+    "baseRemote": "upstream",
+    "baseBranch": "main",
+    "pushRemote": "origin",
+    "pullRequestRepo": "connectmachine/website",
+    "branchPrefix": "feat/seo-"
+  },
+  "commands": {
+    "install": "npm ci",
+    "checks": ["npm run check", "npm run build", "npm run parity"],
+    "preview": "npm run preview"
+  },
+  "budgets": {
+    "webSearches": 30,
+    "competitorPages": 10,
+    "ahrefsOperations": 3
+  },
+  "phases": {
+    "research": {
+      "backend": "codex",
+      "model": "gpt-5.6-sol",
+      "timeoutMs": 1500000,
+      "skill": "connectmachine-seo-content"
+    },
+    "research_revision": {
+      "backend": "codex",
+      "model": "gpt-5.6-sol",
+      "timeoutMs": 1500000,
+      "skill": "connectmachine-seo-content"
+    },
+    "content": {
+      "backend": "claude",
+      "model": "opus",
+      "timeoutMs": 2400000,
+      "skill": "connectmachine-seo-content"
+    },
+    "content_revision": {
+      "backend": "claude",
+      "model": "opus",
+      "timeoutMs": 2400000,
+      "skill": "connectmachine-seo-content"
+    }
+  }
+}

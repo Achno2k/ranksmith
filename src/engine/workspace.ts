@@ -1,0 +1,48 @@
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { run, tryRun, words } from './exec.ts';
+import { workspacePath } from './paths.ts';
+import { baseRef, type SiteProfile } from './profile.ts';
+import { RESULT_PATH } from './phases.ts';
+
+export const branchFor = (profile: SiteProfile, jobId: string, slug: string): string =>
+  `${profile.repo.branchPrefix}${slug || jobId.toLowerCase()}`;
+
+/**
+ * Cuts a fresh worktree for a Job from the profile's base ref. The human's own checkout
+ * is never touched — it is usually dirty and on an unrelated branch.
+ */
+export async function createWorkspace(profile: SiteProfile, jobId: string, branch: string): Promise<string> {
+  const dir = workspacePath(jobId);
+  const repo = profile.repo.path;
+
+  await removeWorkspace(profile, jobId);
+  await mkdir(dirname(dir), { recursive: true });
+
+  await run('git', ['fetch', profile.repo.baseRemote, '--prune'], { cwd: repo });
+  await run('git', ['worktree', 'add', '-b', branch, dir, baseRef(profile)], { cwd: repo });
+  await hideRunnerArtifacts(dir);
+
+  const [install, installArgs] = words(profile.commands.install);
+  await run(install, installArgs, { cwd: dir, timeoutMs: 15 * 60_000 });
+
+  return dir;
+}
+
+/**
+ * Keeps the runner's own scratch directory out of the website's history. Agents commit
+ * with `git add -A`, so without this the result file would ship in the pull request.
+ */
+async function hideRunnerArtifacts(dir: string): Promise<void> {
+  const scratch = join(dir, RESULT_PATH, '..');
+  await mkdir(scratch, { recursive: true });
+  await writeFile(join(scratch, '.gitignore'), '*\n');
+}
+
+/** Removes a Job's worktree and its branch registration. Safe to call when absent. */
+export async function removeWorkspace(profile: SiteProfile, jobId: string): Promise<void> {
+  const dir = workspacePath(jobId);
+  await tryRun('git', ['worktree', 'remove', '--force', dir], { cwd: profile.repo.path });
+  await rm(dir, { recursive: true, force: true });
+  await tryRun('git', ['worktree', 'prune'], { cwd: profile.repo.path });
+}
