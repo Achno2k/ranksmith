@@ -21,6 +21,7 @@ interface Waiting {
 export class RunQueue {
   readonly #run: Runner;
   readonly #waiting: Waiting[] = [];
+  readonly #idleWaiters: Array<() => void> = [];
   #busy = false;
 
   constructor(run: Runner) {
@@ -48,11 +49,23 @@ export class RunQueue {
     });
   }
 
+  /**
+   * Resolves when nothing is queued or running. Used by callers that drive the Engine
+   * without a long-lived process — a CLI has to know when it may exit.
+   */
+  whenIdle(): Promise<void> {
+    if (this.depth === 0) return Promise.resolve();
+    return new Promise((resolve) => this.#idleWaiters.push(resolve));
+  }
+
   async #drain(): Promise<void> {
     if (this.#busy) return;
 
     const next = this.#waiting.shift();
-    if (!next) return;
+    if (!next) {
+      this.#releaseIdleWaiters();
+      return;
+    }
 
     this.#busy = true;
     try {
@@ -65,5 +78,10 @@ export class RunQueue {
     }
 
     await this.#drain();
+  }
+
+  #releaseIdleWaiters(): void {
+    const waiters = this.#idleWaiters.splice(0);
+    for (const resolve of waiters) resolve();
   }
 }

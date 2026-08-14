@@ -102,6 +102,29 @@ describe('the run queue', () => {
     assert.match(String((result as { error: unknown }).error), /agent exploded/);
   });
 
+  it('lets a caller wait until everything has settled', async () => {
+    const runner = spyRunner();
+    const queue = new RunQueue(runner.run);
+    const release = runner.hold('CM-001');
+
+    void queue.enqueue(task('CM-001'));
+    void queue.enqueue(task('CM-002'));
+
+    let settled = false;
+    const idle = queue.whenIdle().then(() => (settled = true));
+
+    assert.equal(settled, false, 'should not settle while work is queued');
+    release();
+    await idle;
+
+    assert.deepEqual(runner.started, ['CM-001', 'CM-002']);
+    assert.equal(queue.depth, 0);
+  });
+
+  it('settles immediately when there was never any work', async () => {
+    await new RunQueue(async () => {}).whenIdle();
+  });
+
   it('reports how much work is waiting', async () => {
     const runner = spyRunner();
     const queue = new RunQueue(runner.run);

@@ -47,6 +47,11 @@ export class Engine {
     return this.#queue.depth;
   }
 
+  /** Resolves when no Phase is running or queued. */
+  whenIdle(): Promise<void> {
+    return this.#queue.whenIdle();
+  }
+
   async startJob(topic: string | null, channel: string): Promise<Job> {
     const job = this.#jobs.createJob({
       profile: this.#profile.id,
