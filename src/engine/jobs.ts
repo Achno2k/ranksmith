@@ -36,7 +36,8 @@ export type JobEventType =
   | 'phase_failed'
   | 'approved'
   | 'changes_requested'
-  | 'rejected';
+  | 'rejected'
+  | 'retried';
 
 export interface JobEvent {
   type: JobEventType;
@@ -98,7 +99,8 @@ export class JobStore {
         slug TEXT,
         branch TEXT,
         pull_request INTEGER,
-        preview_url TEXT
+        preview_url TEXT,
+        failed_from TEXT
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +111,13 @@ export class JobStore {
         created_at TEXT NOT NULL
       );
     `);
+
+    // Databases created before retry existed are missing this column.
+    try {
+      this.#db.exec('ALTER TABLE jobs ADD COLUMN failed_from TEXT');
+    } catch {
+      // Already present.
+    }
   }
 
   close(): void {
@@ -175,9 +184,29 @@ export class JobStore {
 
   /** The Phase this Job was running failed for good. */
   phaseFailed(id: string, reason: string): Job {
-    this.#require(id);
+    const job = this.#require(id);
     this.#record(id, 'phase_failed', 'system', reason);
+    this.#db.prepare('UPDATE jobs SET failed_from = ? WHERE id = ?').run(job.state, id);
     return this.#setState(id, 'failed');
+  }
+
+  /**
+   * Sends a failed Job back to the step it died on. Research and content that already
+   * passed their Contracts are expensive; a failure in between should not discard them.
+   */
+  retryFailed(id: string): Job {
+    const job = this.#require(id);
+    if (job.state !== 'failed') {
+      throw new Error(`${id} has not failed; it is at ${job.state}`);
+    }
+
+    const target = this.#db.prepare('SELECT failed_from FROM jobs WHERE id = ?').get(id) as {
+      failed_from: string | null;
+    };
+    if (!target.failed_from) throw new Error(`${id} does not record where it failed`);
+
+    this.#record(id, 'retried', 'system', target.failed_from);
+    return this.#setState(id, target.failed_from as JobState);
   }
 
   /** A human approved at a Gate. */

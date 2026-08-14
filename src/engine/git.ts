@@ -16,6 +16,20 @@ export async function push(profile: SiteProfile, workspace: string, branch: stri
 }
 
 const PR_NUMBER_IN_URL = /\/pull\/(\d+)/;
+const REMOTE_OWNER = /[:/]([^/:]+)\/[^/]+?(?:\.git)?$/;
+
+/**
+ * How GitHub must be told to find the branch. Work is pushed to a fork, so an unqualified
+ * branch name makes GitHub look for it in the upstream repository, where it does not
+ * exist. Cross-repository pull requests need `owner:branch`.
+ */
+export async function headRef(profile: SiteProfile, workspace: string, branch: string): Promise<string> {
+  const { stdout } = await run('git', ['remote', 'get-url', profile.repo.pushRemote], { cwd: workspace });
+  const owner = stdout.trim().match(REMOTE_OWNER)?.[1];
+  const upstreamOwner = profile.repo.pullRequestRepo.split('/')[0];
+
+  return !owner || owner === upstreamOwner ? branch : `${owner}:${branch}`;
+}
 
 /** Opens a PR for this branch, or returns the number of the one already open for it. */
 export async function openPullRequest(
@@ -25,7 +39,9 @@ export async function openPullRequest(
   title: string,
   body: string,
 ): Promise<number> {
-  const existing = await findPullRequest(profile, branch);
+  const head = await headRef(profile, workspace, branch);
+
+  const existing = await findPullRequest(profile, head);
   if (existing !== null) return existing;
 
   const { stdout } = await run(
@@ -38,7 +54,7 @@ export async function openPullRequest(
       '--base',
       profile.repo.baseBranch,
       '--head',
-      branch,
+      head,
       '--title',
       title,
       '--body',
@@ -50,23 +66,23 @@ export async function openPullRequest(
   const number = Number(stdout.match(PR_NUMBER_IN_URL)?.[1]);
   if (Number.isInteger(number) && number > 0) return number;
 
-  const created = await findPullRequest(profile, branch);
-  if (created === null) throw new Error(`Opened a pull request for ${branch} but could not read its number back`);
+  const created = await findPullRequest(profile, head);
+  if (created === null) throw new Error(`Opened a pull request for ${head} but could not read its number back`);
   return created;
 }
 
 /**
- * `gh pr view` refuses to work with `--repo` and no explicit selector, so the branch is
- * always passed as the selector.
+ * `gh pr view` refuses to work with `--repo` and no explicit selector, so the head ref is
+ * always passed explicitly.
  */
-export async function findPullRequest(profile: SiteProfile, branch: string): Promise<number | null> {
+export async function findPullRequest(profile: SiteProfile, head: string): Promise<number | null> {
   const { exitCode, stdout } = await tryRun('gh', [
     'pr',
     'list',
     '--repo',
     profile.repo.pullRequestRepo,
     '--head',
-    branch,
+    head,
     '--state',
     'open',
     '--json',

@@ -159,4 +159,24 @@ describe('a failed phase', () => {
     assert.equal(failed.state, 'failed');
     assert.equal(store.history(job.id).at(-1)?.detail, 'timed out after 25m');
   });
+
+  it('can be sent back to the step it died on, so finished work is not redone', () => {
+    const store = openStore();
+    const job = startJob(store);
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+    store.phaseCompleted(job.id);
+    assert.equal(store.getJob(job.id)?.state, 'preview_building');
+
+    store.phaseFailed(job.id, 'gh pr create exited 1');
+
+    assert.equal(store.retryFailed(job.id).state, 'preview_building');
+  });
+
+  it('refuses to retry a job that has not failed', () => {
+    const store = openStore();
+    const job = startJob(store);
+
+    assert.throws(() => store.retryFailed(job.id), /researching/);
+  });
 });

@@ -82,6 +82,13 @@ export class Engine {
     await this.#notify.rejected(job);
   }
 
+  /** Sends a failed Job back to the step it died on and runs it again. */
+  async retry(jobId: string): Promise<void> {
+    const job = this.#jobs.retryFailed(jobId);
+    await this.#notify.working(job, `Retrying from ${job.state}.`);
+    this.#enqueue(jobId);
+  }
+
   /**
    * Picks up Jobs that were mid-Phase when the Engine last stopped. Without this they sit
    * in a running state forever: no human action can move a Job that is not at a Gate.

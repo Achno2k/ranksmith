@@ -10,6 +10,7 @@ const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
   npm run job -- start [topic]     start a job; empty topic means discovery
   npm run job -- approve <id>      approve at the job's current gate
   npm run job -- feedback <id> "…" send the job back for a revision
+  npm run job -- retry <id>        re-run a failed job from where it died
   npm run job -- reject <id>       reject and clean up
   npm run job -- status [id]       show live jobs, or one job's history
 `;
@@ -96,6 +97,12 @@ try {
 
       const accepted = await engine.feedback(id, 'cli', text);
       if (!accepted) throw new Error(`${id} is not at a gate; it is ${jobs.getJob(id)?.state}.`);
+      await engine.whenIdle();
+      break;
+    }
+
+    case 'retry': {
+      await engine.retry(requireId());
       await engine.whenIdle();
       break;
     }
