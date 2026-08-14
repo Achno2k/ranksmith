@@ -1,9 +1,9 @@
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { Engine, type Notifier } from './engine/engine.ts';
 import { JobStore, type Job } from './engine/jobs.ts';
 import { loadProfile, verifySkillLinks } from './engine/load-profile.ts';
-import { databasePath, jobDir, ranksmithHome, workspacePath } from './engine/paths.ts';
+import { databasePath, jobDir, ranksmithHome, reviewDocPath, workspacePath } from './engine/paths.ts';
 
 const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
 
@@ -31,7 +31,8 @@ const consoleNotifier: Notifier = {
   keyword  : ${String(result['primary_keyword'] ?? '—')}
   type     : ${String(result['page_type'] ?? '—')}
   slug     : ${String(result['slug'] ?? '—')}
-  document : ${join(workspacePath(job.id), 'docs/seo-content', `${job.date}-research.md`)}
+  review   : ${relative(process.cwd(), reviewDocPath(job.id, job.date))}
+  in branch: ${join(workspacePath(job.id), 'docs/seo-content', `${job.date}-research.md`)}
   budget   : ${JSON.stringify(result['budget_used'] ?? {})}
 
   next: npm run job -- approve ${job.id}

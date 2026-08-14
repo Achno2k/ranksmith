@@ -1,3 +1,5 @@
+import { copyFile, mkdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { killRunningAgents, readResult, runPhase } from './agent.ts';
 import {
   closePullRequest,
@@ -10,7 +12,8 @@ import {
 } from './git.ts';
 import { buildRun } from './invocation.ts';
 import type { Job, JobStore } from './jobs.ts';
-import { logPath, workspacePath } from './paths.ts';
+import { logPath, reviewDocPath, workspacePath } from './paths.ts';
+import { researchPath } from './phases.ts';
 import { startPreview, type Preview } from './preview.ts';
 import { phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { isGate } from './states.ts';
@@ -174,6 +177,7 @@ export class Engine {
       if (await hasChanges(workspace)) {
         await commitAll(workspace, `docs(seo): research for ${job.id}`);
       }
+      await this.#copyForReview(job, workspace);
       const advanced = this.#jobs.phaseCompleted(job.id);
       return this.#notify.researchReady(advanced, result);
     }
@@ -183,6 +187,13 @@ export class Engine {
     }
     this.#jobs.phaseCompleted(job.id);
     this.#enqueue(job.id);
+  }
+
+  /** Mirrors the research into this repo so it can be read without opening the worktree. */
+  async #copyForReview(job: Job, workspace: string): Promise<void> {
+    const destination = reviewDocPath(job.id, job.date);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(join(workspace, researchPath(job.date)), destination);
   }
 
   async #buildPreview(job: Job): Promise<void> {

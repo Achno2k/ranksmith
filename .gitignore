@@ -3,3 +3,7 @@ node_modules/
 *.db
 *.db-wal
 *.db-shm
+
+# Research copied here for local review. Temporary: in production, research is
+# reviewed from the pull request, not from this repo.
+research/
