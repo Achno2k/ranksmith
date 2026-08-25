@@ -21,10 +21,13 @@ import { RunQueue } from './queue.ts';
 import { classifyRun, MAX_ATTEMPTS } from './retry.ts';
 import { branchFor, createWorkspace, removeWorkspace } from './workspace.ts';
 
+/** Refreshes the in-place running status without flooding a Slack thread. */
+const STATUS_HEARTBEAT_MS = 60_000;
+
 /** How the Engine reaches the humans. Kept behind an interface so the flow stays testable. */
 export interface Notifier {
   jobStarted(job: Job): Promise<string>;
-  researchReady(job: Job, result: Record<string, unknown>): Promise<void>;
+  researchReady(job: Job, result: Record<string, unknown>, documentPath: string): Promise<void>;
   contentReady(job: Job, prUrl: string): Promise<void>;
   working(job: Job, note: string): Promise<void>;
   merging(job: Job, prUrl: string): Promise<void>;
@@ -55,16 +58,25 @@ export class Engine {
     return this.#queue.whenIdle();
   }
 
-  async startJob(topic: string | null, channel: string): Promise<Job> {
-    const job = this.#jobs.createJob({
+  async startJob(
+    topic: string | null,
+    channel: string,
+    existingThreadTs: string | null = null,
+  ): Promise<Job> {
+    const created = this.#jobs.createJob({
       profile: this.#profile.id,
       jobPrefix: this.#profile.jobPrefix,
       topic,
       slackChannel: channel,
     });
 
-    const threadTs = await this.#notify.jobStarted(job);
-    this.#jobs.update(job.id, { slack_thread_ts: threadTs });
+    // A mention already has a conversation to live in. Slash commands still create a
+    // new root message and use its timestamp as the Job thread.
+    const job = existingThreadTs
+      ? this.#jobs.update(created.id, { slack_thread_ts: existingThreadTs })
+      : created;
+    const postedTs = await this.#notify.jobStarted(job);
+    if (!existingThreadTs) this.#jobs.update(job.id, { slack_thread_ts: postedTs });
     this.#enqueue(job.id);
 
     return this.#jobs.getJob(job.id)!;
@@ -148,7 +160,9 @@ export class Engine {
     let gaps: string[] = [];
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      await this.#notify.working(job, attempt === 1 ? `Running ${phase}.` : `Retrying ${phase}.`);
+      const currentLog = logPath(job.id, phase, attempt);
+      const verb = attempt === 1 ? 'Running' : 'Retrying';
+      await this.#notify.working(job, `${verb} ${phase}.\nLive log: \`${currentLog}\``);
 
       const invocation = buildRun({
         jobId: job.id,
@@ -161,12 +175,25 @@ export class Engine {
         gaps,
       });
 
-      const outcome = await runPhase({
-        invocation,
-        phase,
-        date: job.date,
-        logPath: logPath(job.id, phase, attempt),
-      });
+      const startedAt = Date.now();
+      let heartbeatInFlight = false;
+      const heartbeat = setInterval(() => {
+        if (heartbeatInFlight) return;
+        heartbeatInFlight = true;
+        const elapsed = formatElapsed(Date.now() - startedAt);
+        void this.#notify
+          .working(job, `${verb} ${phase} · ${elapsed} elapsed · process active.\nLive log: \`${currentLog}\``)
+          .catch((error: unknown) => console.error(`[${job.id}] status heartbeat failed:`, error))
+          .finally(() => (heartbeatInFlight = false));
+      }, STATUS_HEARTBEAT_MS);
+      heartbeat.unref();
+
+      let outcome;
+      try {
+        outcome = await runPhase({ invocation, phase, date: job.date, logPath: currentLog });
+      } finally {
+        clearInterval(heartbeat);
+      }
       const decision = classifyRun(outcome, attempt);
 
       if (decision.action === 'complete') return this.#phaseSucceeded(job, phase, workspace);
@@ -184,9 +211,9 @@ export class Engine {
       if (await hasChanges(workspace)) {
         await commitAll(workspace, `docs(seo): research for ${job.id}`);
       }
-      await this.#copyForReview(job, workspace);
+      const documentPath = await this.#copyForReview(job, workspace);
       const advanced = this.#jobs.phaseCompleted(job.id);
-      return this.#notify.researchReady(advanced, result);
+      return this.#notify.researchReady(advanced, result, documentPath);
     }
 
     if (await hasChanges(workspace)) {
@@ -197,10 +224,11 @@ export class Engine {
   }
 
   /** Mirrors the research into this repo so it can be read without opening the worktree. */
-  async #copyForReview(job: Job, workspace: string): Promise<void> {
+  async #copyForReview(job: Job, workspace: string): Promise<string> {
     const destination = reviewDocPath(job.id, job.date);
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(join(workspace, researchPath(job.date)), destination);
+    return destination;
   }
 
   async #buildPreview(job: Job): Promise<void> {
@@ -275,6 +303,12 @@ export class Engine {
     this.#previews.delete(jobId);
     await preview.stop();
   }
+}
+
+function formatElapsed(milliseconds: number): string {
+  const minutes = Math.max(1, Math.floor(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function pullRequestBody(job: Job): string {

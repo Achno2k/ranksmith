@@ -40,7 +40,7 @@ export function jobStarted(job: Job) {
   return { text: `${job.id} started`, blocks: [section(lines.join('\n'))] };
 }
 
-export function researchReady(job: Job, result: Record<string, unknown>) {
+export function researchReady(job: Job, result: Record<string, unknown>, filename: string | null) {
   const lines = [
     `*${job.id} — research ready*`,
     '',
@@ -49,7 +49,9 @@ export function researchReady(job: Job, result: Record<string, unknown>) {
     `*Slug:* \`${String(result['slug'] ?? '—')}\``,
     ...bullets(result['why']),
     '',
-    `Full research: \`docs/seo-content/${job.date}-research.md\``,
+    filename
+      ? `Full research: attached in this thread as \`${filename}\`.`
+      : ':warning: Research attachment failed to upload. Ask the RankSmith operator to check `files:write`.',
   ];
 
   return { text: `${job.id} research ready`, blocks: [section(lines.join('\n')), gate(job.id), hint] };
@@ -66,7 +68,15 @@ export function contentReady(job: Job, prUrl: string) {
   return { text: `${job.id} content ready`, blocks: [section(lines.join('\n')), gate(job.id), hint] };
 }
 
-export const working = (job: Job, note: string) => ({ text: `${job.id}: ${note}` });
+export const working = (job: Job, note: string, loader = '⠋') => ({
+  text: `${loader} ${job.id}: ${note}`,
+  blocks: [section(`${loader} *${job.id} is working*\n${note}`)],
+});
+
+export const finishedWorking = (job: Job, note: string) => ({
+  text: `${job.id}: ${note}`,
+  blocks: [section(`:white_check_mark: *${job.id}*\n${note}`)],
+});
 
 export const merging = (job: Job, prUrl: string) => ({
   text: `${job.id} approved. Auto-merge queued behind CI: ${prUrl}`,
@@ -79,3 +89,8 @@ export const failed = (job: Job, reason: string) => ({
 });
 
 export const notApprover = 'You are not an approver for RankSmith jobs.';
+
+export const mentionUsage = 'Give RankSmith a topic or request, for example: `@RankSmith research event lead capture`.';
+
+export const feedbackNotReady = (job: Job) =>
+  `${job.id} is currently \`${job.state}\`. Mention feedback is accepted when the Job is waiting for review.`;

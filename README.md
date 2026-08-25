@@ -8,7 +8,7 @@ shape is what it is.
 ## How a job runs
 
 ```
-/seo [topic]
+/seo [topic]  or  @RankSmith [research prompt]
   → RESEARCHING        codex, in a fresh worktree
   → RESEARCH_REVIEW    ● gate: Approve / Reject / reply with feedback
   → GENERATING         claude, commits to the job branch
@@ -34,16 +34,33 @@ npm start
 before linking. It does not delete anything.
 
 The Slack app needs Socket Mode, an app-level token with `connections:write`, and bot
-scopes `chat:write`, `commands`, `channels:history`, `groups:history`. Add a `/seo`
-slash command pointing at the app.
+scopes `chat:write`, `commands`, `files:write`, `files:read`, `users:read`,
+`app_mentions:read`, `reactions:write`, `channels:history`, and `groups:history`. Add a
+`/seo` slash command and subscribe to the `app_mention` event. Start a Job with `/seo
+[topic]` or by writing `@RankSmith [research prompt]` in a channel or thread. Mentioned
+Jobs react with :eyes: and keep all pipeline updates in the thread where RankSmith was
+tagged. RankSmith uses `files:write` to attach each completed research document directly
+to its Slack review thread.
 
 ## Commands
 
 ```bash
-npm start        # run the engine
-npm test         # node:test across the tested seams
+npm start                              # run the Slack engine
+npm run job -- status CM-002           # inspect a Job's persisted state
+npm test                               # node:test across the tested seams
 npm run typecheck
 ```
+
+While the pipeline runs, Slack animates one in-thread loader by updating its frame every
+five seconds; it also refreshes the elapsed time and log location every minute. No extra
+thread replies are created. To stream the full agent output locally:
+
+```bash
+tail -f ~/.ranksmith/jobs/CM-002/logs/research-1.log
+```
+
+Replace `~/.ranksmith` with `RANKSMITH_HOME` when that variable is configured. A Phase
+may run for 25–40 minutes; a changing heartbeat means its process is still alive.
 
 ## What is tested
 

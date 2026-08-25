@@ -20,6 +20,16 @@ oauth_config:
       - chat:write
       # receive the /seo slash command
       - commands
+      # attach research documents to the job thread for review
+      - files:write
+      # accept documents and screenshots as future job or revision context
+      - files:read
+      # resolve approver IDs to readable names in future audit and review views
+      - users:read
+      # support conversational status and control commands via @RankSmith
+      - app_mentions:read
+      # mark job messages with compact processing, completion, and failure states
+      - reactions:write
       # read thread replies, which are how feedback is given
       - channels:history
       - groups:history
@@ -29,6 +39,7 @@ settings:
     bot_events:
       - message.channels
       - message.groups
+      - app_mention
   interactivity:
     is_enabled: true
   socket_mode_enabled: true

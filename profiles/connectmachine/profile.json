@@ -34,13 +34,13 @@
     },
     "content": {
       "backend": "claude",
-      "model": "opus",
+      "model": "claude-opus-5",
       "timeoutMs": 2400000,
       "skill": "connectmachine-seo-content"
     },
     "content_revision": {
       "backend": "claude",
-      "model": "opus",
+      "model": "claude-opus-5",
       "timeoutMs": 2400000,
       "skill": "connectmachine-seo-content"
     }

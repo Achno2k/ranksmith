@@ -18,8 +18,31 @@ export function createSlackApp(config: SlackConfig) {
 
 type SlackApp = ReturnType<typeof createSlackApp>;
 
+/** Removes only RankSmith's own Slack mention while preserving other tagged users. */
+export function promptFromMention(text: string, botUserId: string | undefined): string {
+  const fallback = text.match(/<@[A-Z0-9]+>/)?.[0];
+  const mention = botUserId ? `<@${botUserId}>` : fallback;
+  return mention ? text.replaceAll(mention, ' ').replace(/[ \t]+/g, ' ').trim() : text.trim();
+}
+
+export const threadForMention = (event: { ts: string; thread_ts?: string }): string =>
+  event.thread_ts ?? event.ts;
+
+const LOADER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
+const LOADER_FRAME_MS = 5_000;
+
+interface AnimatedStatus {
+  timestamp: string;
+  note: string;
+  frame: number;
+  timer: ReturnType<typeof setInterval> | null;
+  inFlight: Promise<void> | null;
+}
+
 /** Posts everything the Engine wants humans to see into the Job's own thread. */
 export function createNotifier(app: SlackApp): Notifier {
+  const statusMessages = new Map<string, AnimatedStatus>();
+
   const post = async (job: Job, message: { text: string; blocks?: unknown[] }) => {
     const response = await app.client.chat.postMessage({
       channel: job.slackChannel,
@@ -29,22 +52,117 @@ export function createNotifier(app: SlackApp): Notifier {
     return String(response.ts);
   };
 
+  /** Advances one frame by editing the existing message; no new thread replies are added. */
+  const refreshStatus = (job: Job, status: AnimatedStatus): Promise<void> => {
+    if (status.inFlight) return status.inFlight;
+
+    let update!: Promise<void>;
+    update = app.client.chat
+      .update({
+        channel: job.slackChannel,
+        ts: status.timestamp,
+        ...messages.working(job, status.note, LOADER_FRAMES[status.frame] ?? LOADER_FRAMES[0]),
+      })
+      .then(() => {})
+      .catch((error: unknown) => console.error(`[${job.id}] loader update failed:`, error))
+      .finally(() => {
+        if (status.inFlight === update) status.inFlight = null;
+      });
+    status.inFlight = update;
+    return update;
+  };
+
+  /** One animated status per Job communicates liveness without flooding its thread. */
+  const setStatus = async (job: Job, note: string): Promise<void> => {
+    const existing = statusMessages.get(job.id);
+    if (existing) {
+      existing.note = note;
+      existing.frame = (existing.frame + 1) % LOADER_FRAMES.length;
+      await refreshStatus(job, existing);
+      return;
+    }
+
+    const status: AnimatedStatus = {
+      timestamp: await post(job, messages.working(job, note, LOADER_FRAMES[0])),
+      note,
+      frame: 0,
+      timer: null,
+      inFlight: null,
+    };
+    statusMessages.set(job.id, status);
+
+    status.timer = setInterval(() => {
+      if (statusMessages.get(job.id) !== status) return;
+      status.frame = (status.frame + 1) % LOADER_FRAMES.length;
+      void refreshStatus(job, status);
+    }, LOADER_FRAME_MS);
+    status.timer.unref();
+  };
+
+  const finishStatus = async (job: Job, note: string): Promise<void> => {
+    const status = statusMessages.get(job.id);
+    if (!status) return;
+
+    statusMessages.delete(job.id);
+    if (status.timer) clearInterval(status.timer);
+    if (status.inFlight) await status.inFlight;
+
+    await app.client.chat.update({
+      channel: job.slackChannel,
+      ts: status.timestamp,
+      ...messages.finishedWorking(job, note),
+    });
+  };
+
   return {
-    // Posted to the channel the command came from, which is the same channel every later
-    // message and every thread reply uses. Splitting the two strands the job's gates.
+    // Mentions keep every update under the message that invoked RankSmith. Slash commands
+    // have no source message, so their first post becomes the Job's new thread root.
     jobStarted: async (job) => {
       const response = await app.client.chat.postMessage({
         channel: job.slackChannel,
+        ...(job.slackThreadTs ? { thread_ts: job.slackThreadTs } : {}),
         ...messages.jobStarted(job),
       });
       return String(response.ts);
     },
-    researchReady: async (job, result) => void (await post(job, messages.researchReady(job, result))),
-    contentReady: async (job, prUrl) => void (await post(job, messages.contentReady(job, prUrl))),
-    working: async (job, note) => void (await post(job, messages.working(job, note))),
-    merging: async (job, prUrl) => void (await post(job, messages.merging(job, prUrl))),
-    failed: async (job, reason) => void (await post(job, messages.failed(job, reason))),
-    rejected: async (job) => void (await post(job, messages.rejected(job))),
+    researchReady: async (job, result, documentPath) => {
+      await finishStatus(job, 'Research complete — waiting for review.');
+      const filename = `${job.id}-${job.date}-research.md`;
+      if (!job.slackThreadTs) throw new Error(`${job.id} has no Slack thread for its research document`);
+      let attached = true;
+      try {
+        await app.client.filesUploadV2({
+          channel_id: job.slackChannel,
+          thread_ts: job.slackThreadTs,
+          file: documentPath,
+          filename,
+          title: `${job.id} research`,
+          initial_comment: `:page_facing_up: *${job.id} full research document*`,
+        });
+      } catch (error) {
+        // File delivery is useful but must never turn completed research into a failed Job.
+        attached = false;
+        console.error(`[${job.id}] could not upload research to Slack:`, error);
+      }
+      await post(job, messages.researchReady(job, result, attached ? filename : null));
+    },
+    contentReady: async (job, prUrl) => {
+      await finishStatus(job, 'Content and preview complete — waiting for review.');
+      await post(job, messages.contentReady(job, prUrl));
+    },
+    working: setStatus,
+    merging: async (job, prUrl) => {
+      await finishStatus(job, 'Pipeline complete.');
+      await post(job, messages.merging(job, prUrl));
+    },
+    failed: async (job, reason) => {
+      await finishStatus(job, 'Pipeline stopped.');
+      await post(job, messages.failed(job, reason));
+    },
+    rejected: async (job) => {
+      await finishStatus(job, 'Pipeline rejected.');
+      await post(job, messages.rejected(job));
+    },
   };
 }
 
@@ -61,6 +179,56 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
     }
 
     await engine.startJob(topic === '' ? null : topic, command.channel_id);
+  });
+
+  app.event('app_mention', async ({ event, context, client }) => {
+    if (!event.user) return;
+
+    if (!allowed(event.user)) {
+      await client.chat.postEphemeral({
+        channel: event.channel,
+        user: event.user,
+        text: messages.notApprover,
+      });
+      return;
+    }
+
+    const prompt = promptFromMention(event.text, context.botUserId);
+    if (prompt === '') {
+      await client.chat.postEphemeral({
+        channel: event.channel,
+        user: event.user,
+        text: messages.mentionUsage,
+      });
+      return;
+    }
+
+    // A reaction immediately confirms that Socket Mode received the request. Failure to
+    // decorate the message is cosmetic and must never prevent the Job from starting.
+    try {
+      await client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'eyes' });
+    } catch (error) {
+      const code = (error as { data?: { error?: string } }).data?.error;
+      if (code !== 'already_reacted') console.error('Could not acknowledge app mention:', error);
+    }
+
+    // A mention inside an existing Job thread is review feedback, not a second Job.
+    if (event.thread_ts) {
+      const job = jobs.jobForThread(event.channel, event.thread_ts);
+      if (job) {
+        const accepted = await engine.feedback(job.id, event.user, prompt);
+        if (!accepted) {
+          await client.chat.postEphemeral({
+            channel: event.channel,
+            user: event.user,
+            text: messages.feedbackNotReady(job),
+          });
+        }
+        return;
+      }
+    }
+
+    await engine.startJob(prompt, event.channel, threadForMention(event));
   });
 
   const gateAction = (actionId: string, act: (jobId: string, userId: string) => Promise<void>) =>

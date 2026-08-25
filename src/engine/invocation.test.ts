@@ -28,10 +28,15 @@ const PROFILE: SiteProfile = {
       timeoutMs: 1_500_000,
       skill: 'connectmachine-seo-content',
     },
-    content: { backend: 'claude', model: 'opus', timeoutMs: 2_400_000, skill: 'connectmachine-seo-content' },
+    content: {
+      backend: 'claude',
+      model: 'claude-opus-5',
+      timeoutMs: 2_400_000,
+      skill: 'connectmachine-seo-content',
+    },
     content_revision: {
       backend: 'claude',
-      model: 'opus',
+      model: 'claude-opus-5',
       timeoutMs: 2_400_000,
       skill: 'connectmachine-seo-content',
     },
@@ -63,7 +68,7 @@ describe('building an agent run', () => {
 
     assert.equal(run.command, 'claude');
     assert.equal(run.cwd, '/work/CM-001');
-    assert.deepEqual(run.args, ['-p', '--model', 'opus', '--permission-mode', 'acceptEdits']);
+    assert.deepEqual(run.args, ['-p', '--model', 'claude-opus-5', '--permission-mode', 'acceptEdits']);
     assert.equal(run.timeoutMs, 2_400_000);
   });
 
