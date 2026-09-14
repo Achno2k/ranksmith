@@ -9,7 +9,7 @@ shape is what it is.
 
 ```
 /seo [topic]  or  @RankSmith [research prompt]
-  → RESEARCHING        codex, in a fresh worktree
+  → RESEARCHING        claude, in a fresh worktree
   → RESEARCH_REVIEW    ● gate: Approve / Reject / reply with feedback
   → GENERATING         claude, commits to the job branch
   → PREVIEW_BUILDING   push, open PR, build, tunnel

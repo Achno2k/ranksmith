@@ -69,7 +69,11 @@ describe('building an agent run', () => {
 
     assert.equal(run.command, 'claude');
     assert.equal(run.cwd, '/work/CM-001');
-    assert.deepEqual(run.args, ['-p', '--model', 'claude-opus-5', '--permission-mode', 'acceptEdits']);
+    assert.deepEqual(run.args.slice(0, 5), ['-p', '--model', 'claude-opus-5', '--permission-mode', 'acceptEdits']);
+    assert.equal(run.args[5], '--allowedTools');
+    for (const tool of ['WebSearch', 'WebFetch', 'Bash(git commit *)', 'Bash(npm run build *)']) {
+      assert.ok(run.args[6]?.split(',').includes(tool), `missing ${tool}`);
+    }
     assert.equal(run.timeoutMs, 2_400_000);
   });
 

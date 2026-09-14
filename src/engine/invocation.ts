@@ -26,13 +26,39 @@ export interface AgentInvocation {
   timeoutMs: number;
 }
 
+/**
+ * `claude -p` denies any tool that would need approval, and acceptEdits only covers file
+ * edits. Without this list research has no web access and content cannot commit or run
+ * the site's checks.
+ */
+const CLAUDE_ALLOWED_TOOLS = [
+  'WebSearch',
+  'WebFetch',
+  'Bash(git add *)',
+  'Bash(git commit *)',
+  'Bash(git status *)',
+  'Bash(git diff *)',
+  'Bash(git log *)',
+  'Bash(npm run check *)',
+  'Bash(npm run build *)',
+  'Bash(npm run parity *)',
+];
+
 export function buildRun(request: RunRequest): AgentInvocation {
   const config = request.profile.phases[request.phase];
 
   const args =
     config.backend === 'codex'
       ? ['exec', '-C', request.workspace, '-m', config.model, '-s', 'workspace-write', '-']
-      : ['-p', '--model', config.model, '--permission-mode', 'acceptEdits'];
+      : [
+          '-p',
+          '--model',
+          config.model,
+          '--permission-mode',
+          'acceptEdits',
+          '--allowedTools',
+          CLAUDE_ALLOWED_TOOLS.join(','),
+        ];
 
   return {
     command: config.backend,

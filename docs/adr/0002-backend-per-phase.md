@@ -1,6 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
+
+> **2026-09-14:** Every Phase now runs on Claude Code (`claude-opus-5`). The Codex
+> subscription lapsed. The per-Phase backend setting stays in the Site Profile, so Codex can
+> come back without code changes.
 
 # Backend is chosen per Phase: Codex researches, Claude writes
 
