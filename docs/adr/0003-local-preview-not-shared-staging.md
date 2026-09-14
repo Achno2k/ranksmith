@@ -9,7 +9,9 @@ shared staging environment. Deploying a pull request there would mean changing t
 website repo's CI to accept a dispatched ref, letting each Job seize staging from
 everyone else, and writing restore-staging-to-main logic for every reject and merge.
 Instead the Engine builds the Job's Workspace and serves it through a `cloudflared`
-tunnel, posting that URL to Slack.
+tunnel, posting that URL to Slack. The tunnel rewrites its origin `Host` header to
+`localhost`; this lets Vite/Astro retain host validation even though every quick tunnel
+gets a different public hostname.
 
 ## Consequences
 

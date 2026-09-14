@@ -23,3 +23,8 @@ export const jobDir = (jobId: string): string => join(ranksmithHome(), 'jobs', j
 
 export const logPath = (jobId: string, phase: string, attempt: number): string =>
   join(jobDir(jobId), 'logs', `${phase}-${attempt}.log`);
+
+export const attachmentsDir = (jobId: string): string => join(jobDir(jobId), 'attachments');
+
+export const workspaceAttachmentsDir = (workspace: string): string =>
+  join(workspace, '.ranksmith', 'attachments');

@@ -8,6 +8,15 @@ import {
   type JobState,
 } from './states.ts';
 
+export interface Attachment {
+  name: string;
+  mimetype: string;
+}
+
+export interface AttachmentInput extends Attachment {
+  sourcePath: string;
+}
+
 export interface Job {
   id: string;
   profile: string;
@@ -21,6 +30,7 @@ export interface Job {
   branch: string | null;
   pullRequest: number | null;
   previewUrl: string | null;
+  attachments: Attachment[];
 }
 
 export interface NewJob {
@@ -28,6 +38,7 @@ export interface NewJob {
   jobPrefix: string;
   topic: string | null;
   slackChannel: string;
+  attachments: Attachment[];
 }
 
 export type JobEventType =
@@ -37,6 +48,7 @@ export type JobEventType =
   | 'approved'
   | 'changes_requested'
   | 'rejected'
+  | 'cancelled'
   | 'retried';
 
 export interface JobEvent {
@@ -57,6 +69,7 @@ interface JobRow {
   branch: string | null;
   pull_request: number | null;
   preview_url: string | null;
+  attachments: string;
 }
 
 interface EventRow {
@@ -77,9 +90,20 @@ const toJob = (row: JobRow): Job => ({
   branch: row.branch,
   pullRequest: row.pull_request,
   previewUrl: row.preview_url,
+  attachments: parseAttachments(row.attachments),
 });
 
 const today = (): string => new Date().toISOString().slice(0, 10);
+
+const parseAttachments = (raw: string | null): Attachment[] => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as Attachment[]) : [];
+  } catch {
+    return [];
+  }
+};
 
 export class JobStore {
   readonly #db: DatabaseSync;
@@ -100,7 +124,8 @@ export class JobStore {
         branch TEXT,
         pull_request INTEGER,
         preview_url TEXT,
-        failed_from TEXT
+        failed_from TEXT,
+        attachments TEXT NOT NULL DEFAULT '[]'
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,13 +143,20 @@ export class JobStore {
     } catch {
       // Already present.
     }
+
+    // Databases created before attachments existed are missing this column.
+    try {
+      this.#db.exec("ALTER TABLE jobs ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      // Already present.
+    }
   }
 
   close(): void {
     this.#db.close();
   }
 
-  createJob({ profile, jobPrefix, topic, slackChannel }: NewJob): Job {
+  createJob({ profile, jobPrefix, topic, slackChannel, attachments }: NewJob): Job {
     const { next } = this.#db
       .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM jobs WHERE profile = ?')
       .get(profile) as { next: number };
@@ -132,10 +164,10 @@ export class JobStore {
 
     this.#db
       .prepare(
-        `INSERT INTO jobs (id, profile, topic, state, slack_channel, seq, date)
-         VALUES (?, ?, ?, 'researching', ?, ?, ?)`,
+        `INSERT INTO jobs (id, profile, topic, state, slack_channel, seq, date, attachments)
+         VALUES (?, ?, ?, 'researching', ?, ?, ?, ?)`,
       )
-      .run(id, profile, topic, slackChannel, next, today());
+      .run(id, profile, topic, slackChannel, next, today(), JSON.stringify(attachments));
     this.#record(id, 'job_created', 'system', null);
 
     return this.getJob(id)!;
@@ -190,6 +222,15 @@ export class JobStore {
     return this.#setState(id, 'failed');
   }
 
+  /** Stops a live Job from any phase or gate. The rejected state is the terminal, non-shipping state. */
+  cancel(id: string, actor: string): Job | null {
+    const job = this.#require(id);
+    if (job.state === 'done' || job.state === 'rejected' || job.state === 'failed') return null;
+
+    this.#record(id, 'cancelled', actor, null);
+    return this.#setState(id, 'rejected');
+  }
+
   /**
    * Sends a failed Job back to the step it died on. Research and content that already
    * passed their Contracts are expensive; a failure in between should not discard them.
@@ -227,11 +268,19 @@ export class JobStore {
    * A human replied in the Job's thread. Only counts as feedback while the Job is
    * waiting at a Gate — chatter at any other moment is left alone.
    */
-  recordFeedback(id: string, actor: string, feedback: string): Job | null {
+  recordFeedback(id: string, actor: string, feedback: string, attachments: Attachment[] = []): Job | null {
     const job = this.#require(id);
     if (!isGate(job.state)) return null;
 
     this.#record(id, 'changes_requested', actor, feedback);
+    if (attachments.length > 0) {
+      const merged = new Map<string, Attachment>();
+      for (const attachment of job.attachments) merged.set(attachment.name, attachment);
+      for (const attachment of attachments) merged.set(attachment.name, attachment);
+      this.#db
+        .prepare('UPDATE jobs SET attachments = ? WHERE id = ?')
+        .run(JSON.stringify([...merged.values()]), id);
+    }
     return this.#setState(id, afterFeedback(job.state));
   }
 

@@ -12,27 +12,45 @@ import type { RunOutcome } from './retry.ts';
 const GRACE_MS = 10_000;
 
 export interface AgentRun {
+  jobId: string;
   invocation: AgentInvocation;
   phase: PhaseName;
   date: string;
   logPath: string;
 }
 
-/** Live agent processes, so shutdown can stop them instead of orphaning a 40-minute run. */
-const running = new Set<ReturnType<typeof spawn>>();
+interface RunningAgent {
+  child: ReturnType<typeof spawn>;
+  exited: Promise<void>;
+}
+
+/** Live agent processes, keyed by Job so Slack can stop one run without killing another. */
+const running = new Map<string, RunningAgent>();
 
 export function killRunningAgents(): void {
-  for (const child of running) child.kill('SIGTERM');
-  running.clear();
+  for (const { child } of running.values()) child.kill('SIGTERM');
+}
+
+/** Requests a graceful stop, escalates if necessary, and resolves after the process exits. */
+export async function killAgent(jobId: string): Promise<boolean> {
+  const agent = running.get(jobId);
+  if (!agent) return false;
+
+  agent.child.kill('SIGTERM');
+  const force = setTimeout(() => agent.child.kill('SIGKILL'), GRACE_MS);
+  force.unref();
+  await agent.exited;
+  clearTimeout(force);
+  return true;
 }
 
 /**
  * Runs one agent Phase to completion and judges it against its Contract. The agent's own
  * account of how it went is not consulted.
  */
-export async function runPhase({ invocation, phase, date, logPath }: AgentRun): Promise<RunOutcome> {
+export async function runPhase({ jobId, invocation, phase, date, logPath }: AgentRun): Promise<RunOutcome> {
   await mkdir(dirname(logPath), { recursive: true });
-  const { exitCode, timedOut } = await spawnAgent(invocation, logPath);
+  const { exitCode, timedOut } = await spawnAgent(jobId, invocation, logPath);
 
   const validation = await validateContract(invocation.cwd, contractFor(phase, date));
 
@@ -45,6 +63,7 @@ export async function readResult(workspace: string): Promise<Record<string, unkn
 }
 
 function spawnAgent(
+  jobId: string,
   invocation: AgentInvocation,
   logPath: string,
 ): Promise<{ exitCode: number; timedOut: boolean }> {
@@ -58,7 +77,11 @@ function spawnAgent(
       cwd: invocation.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    running.add(child);
+    let markExited!: () => void;
+    const exited = new Promise<void>((done) => {
+      markExited = done;
+    });
+    running.set(jobId, { child, exited });
 
     child.stdout.pipe(log, { end: false });
     child.stderr.pipe(log, { end: false });
@@ -73,9 +96,13 @@ function spawnAgent(
     }, invocation.timeoutMs);
 
     /** Flushes the log before settling, so a failure report never points at a truncated file. */
+    let finished = false;
     const finish = (settle: () => void) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(kill);
-      running.delete(child);
+      if (running.get(jobId)?.child === child) running.delete(jobId);
+      markExited();
       log.end(settle);
     };
 

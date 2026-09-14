@@ -1,7 +1,10 @@
 import pkg from '@slack/bolt';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Engine, Notifier } from '../engine/engine.ts';
-import type { Job } from '../engine/jobs.ts';
-import type { JobStore } from '../engine/jobs.ts';
+import type { AttachmentInput, Job, JobStore } from '../engine/jobs.ts';
+import { downloadAttachments, type SlackFile } from './attachments.ts';
 import * as messages from './messages.ts';
 
 const { App } = pkg;
@@ -24,6 +27,9 @@ export function promptFromMention(text: string, botUserId: string | undefined): 
   const mention = botUserId ? `<@${botUserId}>` : fallback;
   return mention ? text.replaceAll(mention, ' ').replace(/[ \t]+/g, ' ').trim() : text.trim();
 }
+
+/** Deliberately exact so a content request containing the word "stop" is not cancelled. */
+export const isStopCommand = (prompt: string): boolean => /^stop[.!]?$/i.test(prompt.trim());
 
 export const threadForMention = (event: { ts: string; thread_ts?: string }): string =>
   event.thread_ts ?? event.ts;
@@ -163,6 +169,10 @@ export function createNotifier(app: SlackApp): Notifier {
       await finishStatus(job, 'Pipeline rejected.');
       await post(job, messages.rejected(job));
     },
+    stopped: async (job) => {
+      await finishStatus(job, 'Stopped by request.');
+      await post(job, messages.stopped(job));
+    },
   };
 }
 
@@ -178,7 +188,13 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
       return;
     }
 
-    await engine.startJob(topic === '' ? null : topic, command.channel_id);
+    const files = (command as { files?: SlackFile[] }).files;
+    const { attachments, cleanup } = await collectAttachments(files, config.botToken);
+    try {
+      await engine.startJob(topic === '' ? null : topic, command.channel_id, null, attachments);
+    } finally {
+      await cleanup();
+    }
   });
 
   app.event('app_mention', async ({ event, context, client }) => {
@@ -212,23 +228,48 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
       if (code !== 'already_reacted') console.error('Could not acknowledge app mention:', error);
     }
 
-    // A mention inside an existing Job thread is review feedback, not a second Job.
-    if (event.thread_ts) {
-      const job = jobs.jobForThread(event.channel, event.thread_ts);
-      if (job) {
-        const accepted = await engine.feedback(job.id, event.user, prompt);
+    const threadJob = event.thread_ts
+      ? jobs.jobForThread(event.channel, event.thread_ts)
+      : null;
+
+    if (isStopCommand(prompt)) {
+      if (!threadJob) {
+        await client.chat.postEphemeral({
+          channel: event.channel,
+          user: event.user,
+          text: messages.stopInJobThread,
+        });
+      } else if (!(await engine.stop(threadJob.id, event.user))) {
+        await client.chat.postEphemeral({
+          channel: event.channel,
+          user: event.user,
+          text: messages.stopNotActive(threadJob),
+        });
+      }
+      return;
+    }
+
+    const files = (event as { files?: SlackFile[] }).files;
+    const { attachments, cleanup } = await collectAttachments(files, config.botToken);
+
+    try {
+      // A mention inside an existing Job thread is review feedback, not a second Job.
+      if (threadJob) {
+        const accepted = await engine.feedback(threadJob.id, event.user, prompt, attachments);
         if (!accepted) {
           await client.chat.postEphemeral({
             channel: event.channel,
             user: event.user,
-            text: messages.feedbackNotReady(job),
+            text: messages.feedbackNotReady(threadJob),
           });
         }
         return;
       }
-    }
 
-    await engine.startJob(prompt, event.channel, threadForMention(event));
+      await engine.startJob(prompt, event.channel, threadForMention(event), attachments);
+    } finally {
+      await cleanup();
+    }
   });
 
   const gateAction = (actionId: string, act: (jobId: string, userId: string) => Promise<void>) =>
@@ -251,26 +292,22 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
   gateAction('ranksmith_approve', (jobId, userId) => engine.approve(jobId, userId));
   gateAction('ranksmith_reject', (jobId, userId) => engine.reject(jobId, userId, null));
 
-  /**
-   * A plain reply in a Job's thread is feedback — no command required. The Engine ignores
-   * it unless the Job is actually waiting at a Gate, so ordinary chatter is harmless.
-   */
-  app.event('message', async ({ event }) => {
-    const message = event as {
-      subtype?: string;
-      bot_id?: string;
-      user?: string;
-      text?: string;
-      channel: string;
-      thread_ts?: string;
-    };
+  // Plain thread replies are intentionally ignored. Feedback and stop commands must
+  // explicitly mention RankSmith, preventing ordinary conversation from starting work.
+}
 
-    if (message.subtype || message.bot_id || !message.thread_ts || !message.user || !message.text) return;
-    if (!allowed(message.user)) return;
+async function collectAttachments(
+  files: SlackFile[] | undefined,
+  botToken: string,
+): Promise<{ attachments: AttachmentInput[]; cleanup: () => Promise<void> }> {
+  if (!files || files.length === 0) {
+    return { attachments: [], cleanup: async () => {} };
+  }
 
-    const job = jobs.jobForThread(message.channel, message.thread_ts);
-    if (!job) return;
-
-    await engine.feedback(job.id, message.user, message.text.trim());
-  });
+  const pendingDir = await mkdtemp(join(tmpdir(), 'ranksmith-attachments-'));
+  const attachments = await downloadAttachments(files, pendingDir, botToken);
+  return {
+    attachments,
+    cleanup: async () => rm(pendingDir, { recursive: true, force: true }),
+  };
 }

@@ -77,6 +77,22 @@ describe('the run queue', () => {
     assert.deepEqual(runner.started, ['CM-001', 'CM-002', 'CM-003']);
   });
 
+  it('removes a queued task before it starts', async () => {
+    const runner = spyRunner();
+    const queue = new RunQueue(runner.run);
+    const release = runner.hold('CM-001');
+
+    const first = queue.enqueue(task('CM-001'));
+    const second = queue.enqueue(task('CM-002'));
+    assert.equal(queue.cancel('CM-002'), 1);
+
+    await second;
+    release();
+    await first;
+
+    assert.deepEqual(runner.started, ['CM-001']);
+  });
+
   it('keeps going after a run throws, so one bad job cannot wedge the rest', async () => {
     const started: string[] = [];
     const queue = new RunQueue(async (t) => {

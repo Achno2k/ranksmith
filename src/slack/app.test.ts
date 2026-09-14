@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { promptFromMention, threadForMention } from './app.ts';
+import { isStopCommand, promptFromMention, threadForMention } from './app.ts';
 
 describe('placing a mentioned Job', () => {
   it('uses a root mention as the pipeline thread', () => {
@@ -9,6 +9,18 @@ describe('placing a mentioned Job', () => {
 
   it('keeps a threaded mention in its existing thread', () => {
     assert.equal(threadForMention({ ts: '100.002', thread_ts: '100.001' }), '100.001');
+  });
+});
+
+describe('recognizing an explicit stop command', () => {
+  it('accepts stop by itself regardless of case or trailing punctuation', () => {
+    assert.equal(isStopCommand('stop'), true);
+    assert.equal(isStopCommand('STOP!'), true);
+  });
+
+  it('does not cancel ordinary content requests that happen to contain stop', () => {
+    assert.equal(isStopCommand('research when users stop following up'), false);
+    assert.equal(isStopCommand('stop comparing NFC cards and software'), false);
   });
 });
 

@@ -51,6 +51,7 @@ const base = {
   topic: null as string | null,
   feedback: null as string | null,
   gaps: [] as string[],
+  attachments: [] as { name: string; mimetype: string }[],
 };
 
 describe('building an agent run', () => {
@@ -139,5 +140,25 @@ describe('building an agent run', () => {
 
   it('says nothing about a previous attempt on the first try', () => {
     assert.doesNotMatch(buildRun({ ...base, phase: 'research' }).prompt, /previous attempt/i);
+  });
+
+  it('lists attached files and tells the agent to read them', () => {
+    const prompt = buildRun({
+      ...base,
+      phase: 'research',
+      attachments: [
+        { name: 'brief.png', mimetype: 'image/png' },
+        { name: 'notes.md', mimetype: 'text/markdown' },
+      ],
+    }).prompt;
+
+    assert.match(prompt, /# Attachments/);
+    assert.match(prompt, /\.ranksmith\/attachments\/brief\.png/);
+    assert.match(prompt, /\.ranksmith\/attachments\/notes\.md/);
+    assert.match(prompt, /image/);
+  });
+
+  it('omits the attachments section when there are none', () => {
+    assert.doesNotMatch(buildRun({ ...base, phase: 'research' }).prompt, /# Attachments/);
   });
 });

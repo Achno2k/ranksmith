@@ -50,9 +50,14 @@ export async function startPreview(
   try {
     await ready(server, `preview server (${command})`);
 
-    tunnel = spawn('cloudflared', ['tunnel', '--url', `http://localhost:${port}`], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // Quick tunnels use a random public hostname. Rewrite the origin Host header to
+    // localhost so Vite/Astro accepts it without disabling host protection or requiring
+    // every generated trycloudflare.com hostname in the website configuration.
+    tunnel = spawn(
+      'cloudflared',
+      ['tunnel', '--url', `http://localhost:${port}`, '--http-host-header', 'localhost'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
     await ready(tunnel, 'cloudflared');
 
     const url = await firstMatch(tunnel, TUNNEL_URL, TUNNEL_TIMEOUT_MS);

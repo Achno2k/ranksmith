@@ -51,6 +51,7 @@ const consoleNotifier: Notifier = {
   },
   merging: async (job, prUrl) => say(`${job.id} approved — auto-merge queued behind CI: ${prUrl}`),
   rejected: async (job) => say(`${job.id} rejected; workspace removed`),
+  stopped: async (job) => say(`${job.id} stopped; workspace removed`),
   failed: async (job, reason) => {
     say(`${job.id} FAILED`);
     console.log(`\n${reason}\n\n  logs: ${join(jobDir(job.id), 'logs')}\n  workspace kept: ${workspacePath(job.id)}\n`);

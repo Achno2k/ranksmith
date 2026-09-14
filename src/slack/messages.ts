@@ -28,7 +28,7 @@ const gate = (jobId: string): KnownBlock => ({
 
 const hint: KnownBlock = {
   type: 'context',
-  elements: [{ type: 'mrkdwn', text: '_Reply in this thread to request changes._' }],
+  elements: [{ type: 'mrkdwn', text: '_Mention @RankSmith in this thread to request changes._' }],
 };
 
 export function jobStarted(job: Job) {
@@ -84,6 +84,8 @@ export const merging = (job: Job, prUrl: string) => ({
 
 export const rejected = (job: Job) => ({ text: `${job.id} rejected. Worktree removed.` });
 
+export const stopped = (job: Job) => ({ text: `${job.id} stopped. Worktree removed.` });
+
 export const failed = (job: Job, reason: string) => ({
   text: `${job.id} failed.\n\`\`\`${reason}\`\`\`\nWorktree kept for inspection.`,
 });
@@ -94,3 +96,7 @@ export const mentionUsage = 'Give RankSmith a topic or request, for example: `@R
 
 export const feedbackNotReady = (job: Job) =>
   `${job.id} is currently \`${job.state}\`. Mention feedback is accepted when the Job is waiting for review.`;
+
+export const stopInJobThread = 'Use `@RankSmith stop` inside the RankSmith Job thread you want to stop.';
+
+export const stopNotActive = (job: Job) => `${job.id} is already \`${job.state}\`; there is nothing to stop.`;

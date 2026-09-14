@@ -1,3 +1,4 @@
+import type { Attachment } from './jobs.ts';
 import { contractFor, researchPath } from './phases.ts';
 import type { PhaseName, SiteProfile } from './profile.ts';
 
@@ -12,6 +13,8 @@ export interface RunRequest {
   feedback: string | null;
   /** Contract gaps from the previous attempt, if this is a retry. */
   gaps: string[];
+  /** Files the user attached to the original Slack message or feedback. */
+  attachments: Attachment[];
 }
 
 export interface AgentInvocation {
@@ -51,6 +54,7 @@ function buildPrompt(request: RunRequest): string {
     boundaries(profile),
     budgets(request),
     required(phase, date),
+    attachments(request.attachments),
     humanFeedback(request.feedback),
     previousAttempt(request.gaps),
   ];
@@ -126,5 +130,23 @@ function previousAttempt(gaps: string[]): string | null {
     '',
     'Your last run did not produce what was required. Fix exactly these gaps:',
     ...gaps.map((gap) => `- ${gap}`),
+  ].join('\n');
+}
+
+function attachments(attachments: Attachment[]): string | null {
+  if (attachments.length === 0) return null;
+
+  const lines = attachments.map((attachment) => {
+    const kind = attachment.mimetype.startsWith('image/')
+      ? 'image'
+      : attachment.mimetype;
+    return `- \`.ranksmith/attachments/${attachment.name}\` (${kind})`;
+  });
+
+  return [
+    '# Attachments',
+    '',
+    'The user attached these files. Read them and consider them as part of the context:',
+    ...lines,
   ].join('\n');
 }

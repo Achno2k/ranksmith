@@ -19,7 +19,9 @@ shape is what it is.
 ```
 
 Feedback at either gate sends the job back for a revision and returns to the same gate.
-Only a human moves a job through a gate.
+Mention `@RankSmith` in the Job thread when giving feedback; unmentioned replies are ignored.
+Use `@RankSmith stop` in that thread to stop an active Job. Only a human moves a job
+through a gate.
 
 ## Setup
 
@@ -41,6 +43,11 @@ scopes `chat:write`, `commands`, `files:write`, `files:read`, `users:read`,
 Jobs react with :eyes: and keep all pipeline updates in the thread where RankSmith was
 tagged. RankSmith uses `files:write` to attach each completed research document directly
 to its Slack review thread.
+
+You can attach files to any kickoff message or feedback reply that mentions `@RankSmith`.
+Images, PDFs, and Markdown files are mirrored into the agent's workspace and listed in
+its prompt as context. A feedback attachment with the same filename as an earlier one
+replaces it.
 
 ## Commands
 

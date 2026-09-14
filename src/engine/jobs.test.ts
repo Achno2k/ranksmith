@@ -5,7 +5,7 @@ import { JobStore } from './jobs.ts';
 const openStore = () => new JobStore(':memory:');
 
 const startJob = (store: JobStore, topic: string | null = null) =>
-  store.createJob({ profile: 'connectmachine', jobPrefix: 'CM', topic, slackChannel: 'C123' });
+  store.createJob({ profile: 'connectmachine', jobPrefix: 'CM', topic, slackChannel: 'C123', attachments: [] });
 
 describe('starting a job', () => {
   it('begins researching', () => {
@@ -26,6 +26,74 @@ describe('starting a job', () => {
 
     assert.equal(startJob(store, 'lead retrieval app').topic, 'lead retrieval app');
     assert.equal(startJob(store).topic, null);
+  });
+
+  it('stores attachments from the initial message', () => {
+    const store = openStore();
+    const job = store.createJob({
+      profile: 'connectmachine',
+      jobPrefix: 'CM',
+      topic: null,
+      slackChannel: 'C123',
+      attachments: [{ name: 'brief.png', mimetype: 'image/png' }],
+    });
+
+    assert.deepEqual(job.attachments, [{ name: 'brief.png', mimetype: 'image/png' }]);
+    assert.deepEqual(store.getJob(job.id)?.attachments, [{ name: 'brief.png', mimetype: 'image/png' }]);
+  });
+});
+
+describe('feedback attachments', () => {
+  const atResearchGate = (store: JobStore) => {
+    const job = startJob(store);
+    store.phaseCompleted(job.id);
+    return job.id;
+  };
+
+  it('appends feedback attachments to the job', () => {
+    const store = openStore();
+    const id = atResearchGate(store);
+
+    store.recordFeedback(id, 'U1', 'use the attached brief', [{ name: 'brief.pdf', mimetype: 'application/pdf' }]);
+
+    assert.deepEqual(store.getJob(id)?.attachments, [
+      { name: 'brief.pdf', mimetype: 'application/pdf' },
+    ]);
+  });
+
+  it('keeps earlier attachments when adding feedback attachments', () => {
+    const store = openStore();
+    const job = store.createJob({
+      profile: 'connectmachine',
+      jobPrefix: 'CM',
+      topic: null,
+      slackChannel: 'C123',
+      attachments: [{ name: 'brief.png', mimetype: 'image/png' }],
+    });
+    store.phaseCompleted(job.id);
+
+    store.recordFeedback(job.id, 'U1', 'also see notes', [{ name: 'notes.md', mimetype: 'text/markdown' }]);
+
+    assert.deepEqual(store.getJob(job.id)?.attachments, [
+      { name: 'brief.png', mimetype: 'image/png' },
+      { name: 'notes.md', mimetype: 'text/markdown' },
+    ]);
+  });
+
+  it('replaces an earlier attachment when feedback uses the same name', () => {
+    const store = openStore();
+    const job = store.createJob({
+      profile: 'connectmachine',
+      jobPrefix: 'CM',
+      topic: null,
+      slackChannel: 'C123',
+      attachments: [{ name: 'brief.png', mimetype: 'image/png' }],
+    });
+    store.phaseCompleted(job.id);
+
+    store.recordFeedback(job.id, 'U1', 'new version', [{ name: 'brief.png', mimetype: 'image/jpeg' }]);
+
+    assert.deepEqual(store.getJob(job.id)?.attachments, [{ name: 'brief.png', mimetype: 'image/jpeg' }]);
   });
 });
 
@@ -146,6 +214,36 @@ describe('human actions at a gate', () => {
         ['approved', 'U2', null],
       ],
     );
+  });
+});
+
+describe('stopping a job', () => {
+  it('cancels work while a phase is running', () => {
+    const store = openStore();
+    const job = startJob(store);
+
+    assert.equal(store.cancel(job.id, 'U1')?.state, 'rejected');
+    assert.deepEqual(store.history(job.id).at(-1), {
+      type: 'cancelled',
+      actor: 'U1',
+      detail: null,
+    });
+  });
+
+  it('cancels work while it is waiting at a gate', () => {
+    const store = openStore();
+    const job = startJob(store);
+    store.phaseCompleted(job.id);
+
+    assert.equal(store.cancel(job.id, 'U1')?.state, 'rejected');
+  });
+
+  it('does nothing when the job is already terminal', () => {
+    const store = openStore();
+    const job = startJob(store);
+    store.cancel(job.id, 'U1');
+
+    assert.equal(store.cancel(job.id, 'U1'), null);
   });
 });
 

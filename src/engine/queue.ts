@@ -37,6 +37,20 @@ export class RunQueue {
     return this.#busy;
   }
 
+  /** Removes work that has not started yet. A running task must stop cooperatively. */
+  cancel(jobId: string): number {
+    let cancelled = 0;
+    for (let index = this.#waiting.length - 1; index >= 0; index -= 1) {
+      const waiting = this.#waiting[index];
+      if (waiting?.task.jobId !== jobId) continue;
+      this.#waiting.splice(index, 1);
+      waiting.settle({ ok: true });
+      cancelled += 1;
+    }
+    if (this.depth === 0) this.#releaseIdleWaiters();
+    return cancelled;
+  }
+
   /**
    * Resolves once this task has had its turn. Never rejects: a run that throws is
    * reported back as a result, so one failure cannot wedge the queue or surface as an

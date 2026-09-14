@@ -17,6 +17,10 @@ export async function loadProfile(profileId: string): Promise<SiteProfile> {
   const path = join(profilesRoot(), profileId, 'profile.json');
   const profile = JSON.parse(await readFile(path, 'utf8')) as SiteProfile;
 
+  // The checkout lives in a different place on each machine the Engine runs on.
+  const repoPath = process.env['RANKSMITH_REPO_PATH'];
+  if (repoPath && profile.repo) profile.repo.path = repoPath;
+
   for (const phase of AGENT_PHASES) {
     if (!profile.phases[phase]) throw new Error(`${path}: missing configuration for phase "${phase}"`);
   }
