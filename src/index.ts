@@ -15,9 +15,10 @@ await verifySkillLinks(config.profileId);
 
 const jobs = new JobStore(databasePath());
 const app = createSlackApp(config.slack);
-const engine = new Engine(jobs, profile, createNotifier(app));
+const notifier = createNotifier(app);
+const engine = new Engine(jobs, profile, notifier);
 
-registerHandlers(app, engine, jobs, config.slack);
+registerHandlers(app, engine, jobs, config.slack, notifier);
 
 await app.start();
 console.log(`RankSmith is listening. Profile: ${profile.id}. Repo: ${profile.repo.path}`);

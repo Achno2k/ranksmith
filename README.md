@@ -103,9 +103,13 @@ npm test                               # node:test across the tested seams
 npm run typecheck
 ```
 
-While the pipeline runs, Slack animates one in-thread loader by updating its frame every
-five seconds; it also refreshes the elapsed time and log location every minute. No extra
-thread replies are created. To stream the full agent output locally:
+While the pipeline runs, the Job thread shows Slack's native status ("RankSmith is working on
+CM-002…") with the current step and elapsed time rotating under it, re-sent every minute so
+Slack's two-minute timeout never drops it. It clears at every gate, failure, and stop. A
+mention in the thread shows it while RankSmith reads the message. The status needs only
+`chat:write`. If Slack refuses it for a conversation, that Job falls back to one in-thread
+loader message edited every five seconds. To stream the full agent output
+locally:
 
 ```bash
 tail -f ~/.ranksmith/jobs/CM-002/logs/research-1.log

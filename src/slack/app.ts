@@ -57,6 +57,9 @@ export function parseGateValue(value: string): { jobId: string; gate: string | n
 const LOADER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
 const LOADER_FRAME_MS = 5_000;
 
+/** Slack drops a native status after two minutes without a message, so it is re-sent well before that. */
+const STATUS_KEEPALIVE_MS = 60_000;
+
 interface AnimatedStatus {
   timestamp: string;
   note: string;
@@ -65,9 +68,87 @@ interface AnimatedStatus {
   inFlight: Promise<void> | null;
 }
 
+interface NativeStatus {
+  note: string;
+  timer: ReturnType<typeof setInterval> | null;
+  inFlight: Promise<boolean> | null;
+}
+
+/** Shows Slack's own shimmer while a mention in a Job thread is triaged. */
+export interface TriageStatus {
+  triaging(job: Job): Promise<void>;
+  triaged(job: Job): Promise<void>;
+}
+
+const slackErrorCode = (error: unknown): string =>
+  (error as { data?: { error?: string } }).data?.error ?? String(error);
+
 /** Posts everything the Engine wants humans to see into the Job's own thread. */
-export function createNotifier(app: SlackApp): Notifier {
+export function createNotifier(app: SlackApp): Notifier & TriageStatus {
   const statusMessages = new Map<string, AnimatedStatus>();
+  const nativeStatuses = new Map<string, NativeStatus>();
+  // Jobs whose thread refused the native status (missing scope, unsupported conversation)
+  // keep the edited loader message for the rest of this process.
+  const loaderOnly = new Set<string>();
+
+  const threadStatus = (job: Job, status: { status: string; loading_messages?: string[] }) =>
+    app.client.assistant.threads.setStatus({
+      channel_id: job.slackChannel,
+      thread_ts: job.slackThreadTs ?? '',
+      ...status,
+    });
+
+  const sendNative = (job: Job, status: NativeStatus): Promise<boolean> => {
+    const send = threadStatus(job, messages.workingStatus(job, status.note))
+      .then(() => true)
+      .catch((error: unknown) => {
+        console.warn(`[${job.id}] native Slack status unavailable (${slackErrorCode(error)}); using the loader message.`);
+        loaderOnly.add(job.id);
+        return false;
+      })
+      .finally(() => {
+        if (status.inFlight === send) status.inFlight = null;
+      });
+    status.inFlight = send;
+    return send;
+  };
+
+  const stopNative = (jobId: string): NativeStatus | null => {
+    const status = nativeStatuses.get(jobId);
+    if (!status) return null;
+    nativeStatuses.delete(jobId);
+    if (status.timer) clearInterval(status.timer);
+    return status;
+  };
+
+  /** Native shimmer first; false means the caller falls back to the loader message. */
+  const setNativeStatus = async (job: Job, note: string): Promise<boolean> => {
+    if (!job.slackThreadTs || loaderOnly.has(job.id)) return false;
+
+    const existing = nativeStatuses.get(job.id);
+    if (existing) {
+      existing.note = note;
+      if (await sendNative(job, existing)) return true;
+      stopNative(job.id);
+      return false;
+    }
+
+    // Registered before the first call so a Gate reached meanwhile can still clear it.
+    const status: NativeStatus = { note, timer: null, inFlight: null };
+    nativeStatuses.set(job.id, status);
+    if (!(await sendNative(job, status))) {
+      stopNative(job.id);
+      return false;
+    }
+    if (nativeStatuses.get(job.id) !== status) return true;
+
+    status.timer = setInterval(() => {
+      if (nativeStatuses.get(job.id) !== status) return;
+      void setStatus(job, status.note);
+    }, STATUS_KEEPALIVE_MS);
+    status.timer.unref();
+    return true;
+  };
 
   const post = async (job: Job, message: { text: string; blocks?: unknown[] }) => {
     const response = await app.client.chat.postMessage({
@@ -100,6 +181,8 @@ export function createNotifier(app: SlackApp): Notifier {
 
   /** One animated status per Job communicates liveness without flooding its thread. */
   const setStatus = async (job: Job, note: string): Promise<void> => {
+    if (await setNativeStatus(job, note)) return;
+
     const existing = statusMessages.get(job.id);
     if (existing) {
       existing.note = note;
@@ -126,6 +209,15 @@ export function createNotifier(app: SlackApp): Notifier {
   };
 
   const finishStatus = async (job: Job, note: string): Promise<void> => {
+    const native = stopNative(job.id);
+    if (native) {
+      if (native.inFlight) await native.inFlight;
+      // Posting the next message clears it too; clearing first keeps a failed post from leaving it up.
+      await threadStatus(job, { status: '' }).catch((error: unknown) =>
+        console.error(`[${job.id}] could not clear the Slack status:`, error),
+      );
+    }
+
     const status = statusMessages.get(job.id);
     if (!status) return;
 
@@ -232,10 +324,30 @@ export function createNotifier(app: SlackApp): Notifier {
       await finishStatus(job, 'Revert cancelled.');
       await post(job, messages.revertCancelled(job));
     },
+    // Triage feedback is cosmetic: the :eyes: reaction already confirmed the mention.
+    triaging: async (job) => {
+      if (!job.slackThreadTs || loaderOnly.has(job.id)) return;
+      await threadStatus(job, messages.triageStatus).catch((error: unknown) =>
+        console.warn(`[${job.id}] no Slack status while triaging (${slackErrorCode(error)}).`),
+      );
+    },
+    // The triage reply cleared the thread's status, including a running Job's. Put that back.
+    triaged: async (job) => {
+      if (!job.slackThreadTs || loaderOnly.has(job.id)) return;
+      const native = nativeStatuses.get(job.id);
+      if (native) return void (await setStatus(job, native.note));
+      await threadStatus(job, { status: '' }).catch(() => {});
+    },
   };
 }
 
-export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, config: SlackConfig): void {
+export function registerHandlers(
+  app: SlackApp,
+  engine: Engine,
+  jobs: JobStore,
+  config: SlackConfig,
+  notify: TriageStatus,
+): void {
   const allowed = (userId: string) => config.approvers.length === 0 || config.approvers.includes(userId);
 
   /** A mention in a Job thread: triage says what it is, the Engine decides whether it is allowed now. */
@@ -352,7 +464,12 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
     try {
       // A mention inside an existing Job thread is about that Job, never a second Job.
       if (threadJob) {
-        await answerInThread(threadJob.id, event.user, prompt, attachments, reply);
+        await notify.triaging(threadJob);
+        try {
+          await answerInThread(threadJob.id, event.user, prompt, attachments, reply);
+        } finally {
+          await notify.triaged(threadJob);
+        }
         return;
       }
 

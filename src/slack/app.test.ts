@@ -3,7 +3,29 @@ import { describe, it } from 'node:test';
 import type { KnownBlock } from '@slack/types';
 import type { Job } from '../engine/jobs.ts';
 import { isStopCommand, kindFromMention, parseGateValue, promptFromMention, threadForMention } from './app.ts';
-import { contentReady, decided, gateValue } from './messages.ts';
+import { contentReady, decided, gateValue, statusLines, workingStatus } from './messages.ts';
+
+describe('native Slack status', () => {
+  const job = { id: 'CM-002' } as Job;
+
+  it('rotates the heartbeat without the log path or process noise', () => {
+    assert.deepEqual(
+      statusLines('Running research · 12m elapsed · process active.\nLive log: `/tmp/research-1.log`'),
+      ['Running research · 12m elapsed'],
+    );
+  });
+
+  it('names the Job and keeps one-line notes as they are', () => {
+    assert.deepEqual(workingStatus(job, 'Building a preview. This takes a few minutes.'), {
+      status: 'is working on CM-002…',
+      loading_messages: ['Building a preview. This takes a few minutes'],
+    });
+  });
+
+  it('still has something to rotate when the note is only a log path', () => {
+    assert.deepEqual(workingStatus(job, 'Live log: `x`').loading_messages, ['Working on CM-002…']);
+  });
+});
 
 describe('gate buttons', () => {
   const job = { id: 'CM-002', state: 'content_review', previewUrl: null } as Job;

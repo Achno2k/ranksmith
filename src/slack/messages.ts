@@ -109,6 +109,25 @@ export const working = (job: Job, note: string, loader = '⠋') => ({
   blocks: [section(`${loader} *${job.id} is working*\n${note}`)],
 });
 
+/** The Engine's note as short lines Slack can rotate under the thread; log paths stay in the loader message. */
+export const statusLines = (note: string): string[] =>
+  note
+    .split('\n')
+    .map((line) => line.replace(/ · process active\.?$/, '').replace(/\.$/, '').trim())
+    .filter((line) => line !== '' && !line.startsWith('Live log:'))
+    .slice(0, 10);
+
+/** Slack renders the status after the app name: "RankSmith is working on CM-002…". */
+export const workingStatus = (job: Job, note: string) => {
+  const lines = statusLines(note);
+  return { status: `is working on ${job.id}…`, loading_messages: lines.length > 0 ? lines : [`Working on ${job.id}…`] };
+};
+
+export const triageStatus = {
+  status: 'is reading your message…',
+  loading_messages: ['Reading your message…', 'Checking the Job, its pull request, and the repo…'],
+};
+
 export const finishedWorking = (job: Job, note: string) => ({
   text: `${job.id}: ${note}`,
   blocks: [section(`:white_check_mark: *${job.id}*\n${note}`)],
