@@ -8,6 +8,10 @@ export const JOB_STATES = [
   'content_revising',
   'merging',
   'done',
+  'reverting',
+  'revert_review',
+  'revert_merging',
+  'reverted',
   'rejected',
   'failed',
 ] as const;
@@ -18,7 +22,7 @@ export type JobState = (typeof JOB_STATES)[number];
  * States where the Job waits for a human. Only a human action moves a Job out of
  * one of these — the Engine never does, and an agent may never infer approval.
  */
-export const GATES = ['research_review', 'content_review'] as const;
+export const GATES = ['research_review', 'content_review', 'revert_review'] as const;
 
 export type Gate = (typeof GATES)[number];
 
@@ -32,6 +36,8 @@ const AFTER_PHASE = {
   preview_building: 'content_review',
   content_revising: 'preview_building',
   merging: 'done',
+  reverting: 'revert_review',
+  revert_merging: 'reverted',
 } as const satisfies Partial<Record<JobState, JobState>>;
 
 export type RunningState = keyof typeof AFTER_PHASE;
@@ -44,14 +50,18 @@ export const afterPhase = (state: RunningState): JobState => AFTER_PHASE[state];
 const AFTER_APPROVAL = {
   research_review: 'generating',
   content_review: 'merging',
+  revert_review: 'revert_merging',
 } as const satisfies Record<Gate, JobState>;
 
 export const afterApproval = (gate: Gate): JobState => AFTER_APPROVAL[gate];
 
-/** Where a Job goes when a human replies with feedback at a Gate. */
-const AFTER_FEEDBACK = {
+/**
+ * Where a Job goes when a human replies with feedback at a Gate. A revert has nothing to
+ * revise, so its Gate takes only approve or reject.
+ */
+const AFTER_FEEDBACK: Partial<Record<Gate, JobState>> = {
   research_review: 'research_revising',
   content_review: 'content_revising',
-} as const satisfies Record<Gate, JobState>;
+};
 
-export const afterFeedback = (gate: Gate): JobState => AFTER_FEEDBACK[gate];
+export const afterFeedback = (gate: Gate): JobState | null => AFTER_FEEDBACK[gate] ?? null;

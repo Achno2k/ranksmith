@@ -11,8 +11,16 @@ export async function commitAll(workspace: string, message: string): Promise<voi
   await run('git', ['commit', '-m', message], { cwd: workspace });
 }
 
-export async function push(profile: SiteProfile, workspace: string, branch: string): Promise<void> {
-  await run('git', ['push', '-u', profile.repo.pushRemote, branch], { cwd: workspace });
+/** `force` is only for branches RankSmith alone writes, where a rerun rebuilds the same commit. */
+export async function push(
+  profile: SiteProfile,
+  workspace: string,
+  branch: string,
+  { force = false }: { force?: boolean } = {},
+): Promise<void> {
+  await run('git', ['push', ...(force ? ['--force'] : []), '-u', profile.repo.pushRemote, branch], {
+    cwd: workspace,
+  });
 }
 
 const PR_NUMBER_IN_URL = /\/pull\/(\d+)/;
@@ -104,7 +112,11 @@ export async function enableAutoMerge(profile: SiteProfile, number: number): Pro
   await run('gh', ['pr', 'merge', String(number), '--repo', profile.repo.pullRequestRepo, '--auto', '--squash']);
 }
 
-export async function closePullRequest(profile: SiteProfile, number: number): Promise<void> {
+export async function closePullRequest(
+  profile: SiteProfile,
+  number: number,
+  comment = 'Rejected during RankSmith review.',
+): Promise<void> {
   await tryRun('gh', [
     'pr',
     'close',
@@ -113,7 +125,7 @@ export async function closePullRequest(profile: SiteProfile, number: number): Pr
     profile.repo.pullRequestRepo,
     '--delete-branch',
     '--comment',
-    'Rejected during RankSmith review.',
+    comment,
   ]);
 }
 
@@ -130,4 +142,57 @@ export async function pullRequestUrl(profile: SiteProfile, number: number): Prom
     '.url',
   ]);
   return stdout.trim();
+}
+
+export interface PullRequestInfo {
+  state: 'OPEN' | 'CLOSED' | 'MERGED';
+  url: string;
+  title: string;
+  /** The commit the pull request landed as on the base branch, or null if it never merged. */
+  mergeCommit: string | null;
+}
+
+export async function pullRequestInfo(profile: SiteProfile, number: number): Promise<PullRequestInfo> {
+  const { stdout } = await run('gh', [
+    'pr',
+    'view',
+    String(number),
+    '--repo',
+    profile.repo.pullRequestRepo,
+    '--json',
+    'state,url,title,mergeCommit',
+  ]);
+  const raw = JSON.parse(stdout) as Omit<PullRequestInfo, 'mergeCommit'> & { mergeCommit: { oid: string } | null };
+
+  return { state: raw.state, url: raw.url, title: raw.title, mergeCommit: raw.mergeCommit?.oid ?? null };
+}
+
+/** One line per workflow run on a commit, which is where staging deploys show up. Empty if gh cannot tell. */
+export async function deployRuns(profile: SiteProfile, sha: string): Promise<string> {
+  const { exitCode, stdout } = await tryRun('gh', [
+    'run',
+    'list',
+    '--repo',
+    profile.repo.pullRequestRepo,
+    '--commit',
+    sha,
+    '--json',
+    'name,status,conclusion,createdAt,url',
+    '--jq',
+    '.[] | "\\(.name): \\(.status) \\(.conclusion) \\(.createdAt) \\(.url)"',
+  ]);
+  return exitCode === 0 ? stdout.trim() : '';
+}
+
+/**
+ * Undoes a merged pull request with a new commit. Pull requests land squashed, so the merge
+ * commit has one parent and needs no `-m`. A conflict is aborted and reported, never forced.
+ */
+export async function revertCommit(workspace: string, sha: string): Promise<void> {
+  const result = await tryRun('git', ['revert', '--no-edit', sha], { cwd: workspace });
+  if (result.exitCode === 0) return;
+
+  const { stdout } = await tryRun('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: workspace });
+  await tryRun('git', ['revert', '--abort'], { cwd: workspace });
+  throw new Error(`git revert ${sha} did not apply cleanly. Conflicts:\n${stdout.trim() || result.stderr.trim()}`);
 }

@@ -1,24 +1,28 @@
-import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { killAgent, killRunningAgents, readResult, runPhase } from './agent.ts';
 import {
   closePullRequest,
   commitAll,
+  deployRuns,
   enableAutoMerge,
   hasChanges,
   openPullRequest,
+  pullRequestInfo,
   pullRequestUrl,
   push,
+  revertCommit,
 } from './git.ts';
 import { buildRun } from './invocation.ts';
 import type { AttachmentInput, Job, JobStore } from './jobs.ts';
 import { attachmentsDir, logPath, reviewDocPath, workspaceAttachmentsDir, workspacePath } from './paths.ts';
 import { researchPath } from './phases.ts';
 import { startPreview, type Preview } from './preview.ts';
-import { phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
-import { isGate } from './states.ts';
+import { baseRef, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
+import { afterFeedback, isGate } from './states.ts';
 import { RunQueue } from './queue.ts';
 import { classifyRun, MAX_ATTEMPTS } from './retry.ts';
+import { runTriage, type Triage } from './triage.ts';
 import { branchFor, createWorkspace, removeWorkspace } from './workspace.ts';
 
 /** Refreshes the in-place running status without flooding a Slack thread. */
@@ -34,6 +38,10 @@ export interface Notifier {
   failed(job: Job, reason: string): Promise<void>;
   rejected(job: Job): Promise<void>;
   stopped(job: Job): Promise<void>;
+  revertReady(job: Job, prUrl: string): Promise<void>;
+  /** `prUrl` is the revert pull request, or null when the original was closed before it merged. */
+  reverted(job: Job, prUrl: string | null): Promise<void>;
+  revertCancelled(job: Job): Promise<void>;
 }
 
 export class Engine {
@@ -95,6 +103,8 @@ export class Engine {
   }
 
   async reject(jobId: string, actor: string, feedback: string | null): Promise<void> {
+    if (this.#jobs.getJob(jobId)?.state === 'revert_review') return this.#cancelRevert(jobId, actor);
+
     const job = this.#jobs.reject(jobId, actor, feedback);
     if (job.pullRequest !== null) await closePullRequest(this.#profile, job.pullRequest);
     await this.#teardown(job);
@@ -146,10 +156,38 @@ export class Engine {
     await Promise.all([...this.#previews.keys()].map((jobId) => this.#stopPreview(jobId)));
   }
 
+  /** Undoes a finished Job's merged work behind a new pull request and its own Gate. */
+  async revert(jobId: string, actor: string, reason: string | null): Promise<boolean> {
+    const job = this.#jobs.requestRevert(jobId, actor, reason);
+    if (!job) return false;
+
+    await this.#notify.working(job, 'Preparing a revert.');
+    this.#enqueue(jobId);
+    return true;
+  }
+
+  /**
+   * Works out what a mention in a Job thread wants, and answers it when it is a question.
+   * Null when the reply could not be understood.
+   */
+  async triage(jobId: string, text: string): Promise<Triage | null> {
+    const job = this.#jobs.getJob(jobId);
+    if (!job) return null;
+
+    // A finished Job has no worktree left; its work lives on the base branch instead.
+    const workspace = workspacePath(job.id);
+    const cwd = await access(workspace).then(
+      () => workspace,
+      () => this.#profile.repo.path,
+    );
+
+    return runTriage({ job, text, cwd, context: await this.#describeForTriage(job) });
+  }
+
   /** Explicit reviewer feedback. Only counts while the Job waits at a Gate. */
   async feedback(jobId: string, actor: string, text: string, attachments: AttachmentInput[] = []): Promise<boolean> {
     const job = this.#jobs.getJob(jobId);
-    if (!job || !isGate(job.state)) return false;
+    if (!job || !isGate(job.state) || afterFeedback(job.state) === null) return false;
 
     await this.#ingestAttachments(jobId, attachments);
 
@@ -195,6 +233,8 @@ export class Engine {
     if (phase) return this.#runAgentPhase(job, phase);
     if (job.state === 'preview_building') return this.#buildPreview(job);
     if (job.state === 'merging') return this.#merge(job);
+    if (job.state === 'reverting') return this.#openRevert(job);
+    if (job.state === 'revert_merging') return this.#mergeRevert(job);
   }
 
   async #runAgentPhase(job: Job, phase: PhaseName): Promise<void> {
@@ -332,6 +372,117 @@ export class Engine {
     await this.#notify.merging(done, url);
   }
 
+  async #openRevert(job: Job): Promise<void> {
+    if (job.pullRequest === null) {
+      return void (await this.#fail(job.id, 'Nothing to revert: the job has no pull request'));
+    }
+
+    const original = await pullRequestInfo(this.#profile, job.pullRequest);
+
+    if (original.state === 'OPEN') {
+      // Auto-merge was still waiting on CI, so closing the pull request is the whole revert.
+      await closePullRequest(this.#profile, job.pullRequest, 'Reverted from Slack before it merged.');
+      const reverted = this.#jobs.revertedBeforeMerge(job.id);
+      await this.#teardown(reverted);
+      return this.#notify.reverted(reverted, null);
+    }
+
+    if (original.mergeCommit === null) {
+      return void (await this.#fail(job.id, `Cannot revert ${original.url}: it was closed without merging`));
+    }
+
+    await this.#notify.working(job, `Reverting ${original.url} on a fresh branch.`);
+    const branch = `${this.#profile.repo.branchPrefix}revert-${job.slug || job.id.toLowerCase()}`;
+    const workspace = await createWorkspace(this.#profile, job.id, branch, { install: false });
+    this.#jobs.update(job.id, { branch });
+
+    await revertCommit(workspace, original.mergeCommit);
+    await push(this.#profile, workspace, branch, { force: true });
+
+    const reason =
+      this.#jobs
+        .history(job.id)
+        .filter((event) => event.type === 'revert_requested')
+        .at(-1)?.detail ?? null;
+    const number = await openPullRequest(
+      this.#profile,
+      workspace,
+      branch,
+      `Revert "${original.title}"`,
+      revertBody(job, original.url, reason),
+    );
+    this.#jobs.update(job.id, { revert_pull_request: number });
+
+    const ready = this.#jobs.phaseCompleted(job.id);
+    await this.#notify.revertReady(ready, await pullRequestUrl(this.#profile, number));
+  }
+
+  async #mergeRevert(job: Job): Promise<void> {
+    if (job.revertPullRequest === null) {
+      return void (await this.#fail(job.id, 'Approved a revert with no revert pull request'));
+    }
+
+    await enableAutoMerge(this.#profile, job.revertPullRequest);
+    const url = await pullRequestUrl(this.#profile, job.revertPullRequest);
+
+    const reverted = this.#jobs.phaseCompleted(job.id);
+    await this.#teardown(reverted);
+    await this.#notify.reverted(reverted, url);
+  }
+
+  /** A rejected revert leaves the shipped work alone and returns the Job to done. */
+  async #cancelRevert(jobId: string, actor: string): Promise<void> {
+    const job = this.#jobs.reject(jobId, actor, null);
+    if (job.revertPullRequest !== null) {
+      await closePullRequest(this.#profile, job.revertPullRequest, 'Revert cancelled during RankSmith review.');
+    }
+
+    const done = this.#jobs.update(jobId, { revert_pull_request: null });
+    await this.#teardown(done);
+    await this.#notify.revertCancelled(done);
+  }
+
+  /** Facts gathered the same way every time, so triage answers from GitHub rather than memory. */
+  async #describeForTriage(job: Job): Promise<string[]> {
+    const lines = [
+      `Job: ${job.id}, state \`${job.state}\``,
+      `Topic: ${job.topic ?? 'none (discovery mode)'}`,
+      `Slug: ${job.slug ?? 'not chosen yet'}`,
+      `Research document: docs/seo-content/${job.date}-research.md`,
+      `Preview: ${job.previewUrl ?? 'none'} (previews stop once review ends)`,
+      `Base branch: ${baseRef(this.#profile)}. Merging into it deploys to staging; production needs a human-created tag.`,
+    ];
+
+    const pullRequests = [
+      ['Pull request', job.pullRequest],
+      ['Revert pull request', job.revertPullRequest],
+    ] as const;
+
+    for (const [label, number] of pullRequests) {
+      if (number === null) continue;
+
+      const pr = await pullRequestInfo(this.#profile, number).catch(() => null);
+      if (!pr) {
+        lines.push(`${label}: #${number} (could not be read from GitHub)`);
+        continue;
+      }
+
+      lines.push(`${label}: ${pr.url}, ${pr.state.toLowerCase()}`);
+      if (pr.mergeCommit) {
+        const runs = await deployRuns(this.#profile, pr.mergeCommit);
+        lines.push(`${label} merge commit ${pr.mergeCommit}. Workflow runs on it:`, runs || '(none found)');
+      }
+    }
+
+    lines.push(
+      'History:',
+      ...this.#jobs
+        .history(job.id)
+        .map((event) => `- ${event.type} by ${event.actor}${event.detail ? `: ${event.detail}` : ''}`),
+    );
+    return lines;
+  }
+
   async #ensureWorkspace(job: Job): Promise<string> {
     if (job.branch) return workspacePath(job.id);
 
@@ -408,6 +559,16 @@ function pullRequestBody(job: Job): string {
     '',
     `Research: \`docs/seo-content/${job.date}-research.md\``,
     job.topic ? `Requested topic: ${job.topic}` : 'Topic chosen by discovery.',
+    '',
+    'Reviewed through Slack. Do not merge manually while the job is open.',
+  ].join('\n');
+}
+
+function revertBody(job: Job, originalUrl: string, reason: string | null): string {
+  return [
+    `Reverts ${originalUrl} for RankSmith job \`${job.id}\`.`,
+    '',
+    reason ? `Requested in Slack: ${reason}` : 'Requested in Slack.',
     '',
     'Reviewed through Slack. Do not merge manually while the job is open.',
   ].join('\n');

@@ -28,7 +28,7 @@ const gate = (jobId: string): KnownBlock => ({
 
 const hint: KnownBlock = {
   type: 'context',
-  elements: [{ type: 'mrkdwn', text: '_Mention @RankSmith in this thread to request changes._' }],
+  elements: [{ type: 'mrkdwn', text: '_Mention @RankSmith in this thread to ask a question or request changes._' }],
 };
 
 export function jobStarted(job: Job) {
@@ -100,3 +100,30 @@ export const feedbackNotReady = (job: Job) =>
 export const stopInJobThread = 'Use `@RankSmith stop` inside the RankSmith Job thread you want to stop.';
 
 export const stopNotActive = (job: Job) => `${job.id} is already \`${job.state}\`; there is nothing to stop.`;
+
+export function revertReady(job: Job, prUrl: string) {
+  const lines = [
+    `*${job.id} — revert ready*`,
+    '',
+    `Revert pull request: ${prUrl}`,
+    'Approving queues it to merge behind CI, which takes the content off staging.',
+  ];
+
+  return { text: `${job.id} revert ready`, blocks: [section(lines.join('\n')), gate(job.id)] };
+}
+
+export const reverted = (job: Job, prUrl: string | null) => ({
+  text: prUrl
+    ? `${job.id} revert approved. Auto-merge queued behind CI: ${prUrl}`
+    : `${job.id} had not merged yet, so its pull request was closed instead.`,
+});
+
+export const revertCancelled = (job: Job) => ({
+  text: `${job.id} revert cancelled. The revert pull request is closed and the content stays.`,
+});
+
+export const revertNotAvailable = (job: Job) =>
+  `${job.id} is \`${job.state}\`. Only a finished Job can be reverted; before that, use Reject or \`stop\`.`;
+
+export const triageFailed =
+  'I could not work out what you meant. Mention me again with a question, a change request, `stop`, or `revert`.';

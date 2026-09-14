@@ -23,6 +23,26 @@ Mention `@RankSmith` in the Job thread when giving feedback; unmentioned replies
 Use `@RankSmith stop` in that thread to stop an active Job. Only a human moves a job
 through a gate.
 
+Every other mention in a Job thread goes through a quick read-only Claude call
+(`claude-sonnet-5`) that decides whether it is a question, feedback, a revert, or a stop.
+Questions ("is this on staging?") get an answer in the thread, checked against the pull
+request, its workflow runs, and the repo. The Engine still decides what is allowed: feedback
+only counts at a gate, and a refusal is a normal thread reply, not an ephemeral one.
+
+A `done` Job can be reverted by asking in its thread, e.g. `@RankSmith revert this`:
+
+```
+DONE
+  → REVERTING          git revert of the merge commit, revert PR opened
+  → REVERT_REVIEW      ● gate: Approve / Reject
+  → REVERT_MERGING     auto-merge queued behind CI
+  → REVERTED
+```
+
+Rejecting the revert closes its PR and returns the Job to `done`. If the original PR had not
+merged yet, the Engine closes it and the Job goes straight to `reverted`. A revert that
+conflicts with later changes fails and lists the conflicting files.
+
 ## Setup
 
 ```bash

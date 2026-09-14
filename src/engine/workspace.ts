@@ -12,7 +12,12 @@ export const branchFor = (profile: SiteProfile, jobId: string, slug: string): st
  * Cuts a fresh worktree for a Job from the profile's base ref. The human's own checkout
  * is never touched — it is usually dirty and on an unrelated branch.
  */
-export async function createWorkspace(profile: SiteProfile, jobId: string, branch: string): Promise<string> {
+export async function createWorkspace(
+  profile: SiteProfile,
+  jobId: string,
+  branch: string,
+  { install = true }: { install?: boolean } = {},
+): Promise<string> {
   const dir = workspacePath(jobId);
   const repo = profile.repo.path;
 
@@ -24,8 +29,11 @@ export async function createWorkspace(profile: SiteProfile, jobId: string, branc
   await run('git', ['worktree', 'add', '-b', branch, dir, baseRef(profile)], { cwd: repo });
   await hideRunnerArtifacts(dir);
 
-  const [install, installArgs] = words(profile.commands.install);
-  await run(install, installArgs, { cwd: dir, timeoutMs: 15 * 60_000 });
+  // A revert only needs git, and a full install takes minutes.
+  if (install) {
+    const [command, args] = words(profile.commands.install);
+    await run(command, args, { cwd: dir, timeoutMs: 15 * 60_000 });
+  }
 
   return dir;
 }

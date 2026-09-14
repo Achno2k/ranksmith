@@ -278,3 +278,72 @@ describe('a failed phase', () => {
     assert.throws(() => store.retryFailed(job.id), /researching/);
   });
 });
+
+describe('reverting a finished job', () => {
+  const finished = (store: JobStore) => {
+    const job = startJob(store);
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+    store.phaseCompleted(job.id);
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+    store.phaseCompleted(job.id);
+    return job.id;
+  };
+
+  it('only reverts a job that is done', () => {
+    const store = openStore();
+    const job = startJob(store);
+
+    assert.equal(store.requestRevert(job.id, 'U1', 'undo'), null);
+    assert.equal(store.getJob(job.id)?.state, 'researching');
+  });
+
+  it('opens a revert, waits for a human, then finishes reverted', () => {
+    const store = openStore();
+    const id = finished(store);
+
+    assert.equal(store.requestRevert(id, 'U1', 'not good enough')?.state, 'reverting');
+    assert.equal(store.phaseCompleted(id).state, 'revert_review');
+    assert.equal(store.approve(id, 'U2').state, 'revert_merging');
+    assert.equal(store.phaseCompleted(id).state, 'reverted');
+    assert.deepEqual(store.liveJobs(), []);
+  });
+
+  it('returns to done when the revert is rejected', () => {
+    const store = openStore();
+    const id = finished(store);
+    store.requestRevert(id, 'U1', null);
+    store.phaseCompleted(id);
+
+    assert.equal(store.reject(id, 'U2').state, 'done');
+    assert.equal(store.history(id).at(-1)?.type, 'revert_cancelled');
+  });
+
+  it('does not treat a reply at the revert gate as content feedback', () => {
+    const store = openStore();
+    const id = finished(store);
+    store.requestRevert(id, 'U1', null);
+    store.phaseCompleted(id);
+
+    assert.equal(store.recordFeedback(id, 'U1', 'change the CTA'), null);
+    assert.equal(store.getJob(id)?.state, 'revert_review');
+  });
+
+  it('goes straight to reverted when the pull request never merged', () => {
+    const store = openStore();
+    const id = finished(store);
+    store.requestRevert(id, 'U1', null);
+
+    assert.equal(store.revertedBeforeMerge(id).state, 'reverted');
+  });
+
+  it('cannot be stopped halfway through a revert', () => {
+    const store = openStore();
+    const id = finished(store);
+    store.requestRevert(id, 'U1', null);
+
+    assert.equal(store.cancel(id, 'U1'), null);
+    assert.equal(store.getJob(id)?.state, 'reverting');
+  });
+});

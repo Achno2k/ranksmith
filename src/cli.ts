@@ -12,6 +12,7 @@ const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
   npm run job -- feedback <id> "…" send the job back for a revision
   npm run job -- retry <id>        re-run a failed job from where it died
   npm run job -- reject <id>       reject and clean up
+  npm run job -- revert <id> [why] open a revert pull request for a done job
   npm run job -- status [id]       show live jobs, or one job's history
 `;
 
@@ -50,6 +51,22 @@ const consoleNotifier: Notifier = {
 `);
   },
   merging: async (job, prUrl) => say(`${job.id} approved — auto-merge queued behind CI: ${prUrl}`),
+  revertReady: async (job, prUrl) => {
+    say(`${job.id} REVERT READY`);
+    console.log(`
+  pull req: ${prUrl}
+
+  next: npm run job -- approve ${job.id}
+        npm run job -- reject ${job.id}
+`);
+  },
+  reverted: async (job, prUrl) =>
+    say(
+      prUrl
+        ? `${job.id} revert approved — auto-merge queued behind CI: ${prUrl}`
+        : `${job.id} had not merged; its pull request was closed`,
+    ),
+  revertCancelled: async (job) => say(`${job.id} revert cancelled; the content stays`),
   rejected: async (job) => say(`${job.id} rejected; workspace removed`),
   stopped: async (job) => say(`${job.id} stopped; workspace removed`),
   failed: async (job, reason) => {
@@ -110,6 +127,14 @@ try {
 
     case 'reject': {
       await engine.reject(requireId(), 'cli', rest.slice(1).join(' ').trim() || null);
+      break;
+    }
+
+    case 'revert': {
+      const id = requireId();
+      const accepted = await engine.revert(id, 'cli', rest.slice(1).join(' ').trim() || null);
+      if (!accepted) throw new Error(`${id} is not done; it is ${jobs.getJob(id)?.state}.`);
+      await engine.whenIdle();
       break;
     }
 

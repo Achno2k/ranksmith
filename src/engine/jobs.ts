@@ -31,6 +31,8 @@ export interface Job {
   pullRequest: number | null;
   previewUrl: string | null;
   attachments: Attachment[];
+  /** The pull request that undoes this Job's merged work, once one is open. */
+  revertPullRequest: number | null;
 }
 
 export interface NewJob {
@@ -49,7 +51,9 @@ export type JobEventType =
   | 'changes_requested'
   | 'rejected'
   | 'cancelled'
-  | 'retried';
+  | 'retried'
+  | 'revert_requested'
+  | 'revert_cancelled';
 
 export interface JobEvent {
   type: JobEventType;
@@ -70,6 +74,7 @@ interface JobRow {
   pull_request: number | null;
   preview_url: string | null;
   attachments: string;
+  revert_pull_request: number | null;
 }
 
 interface EventRow {
@@ -91,9 +96,21 @@ const toJob = (row: JobRow): Job => ({
   pullRequest: row.pull_request,
   previewUrl: row.preview_url,
   attachments: parseAttachments(row.attachments),
+  revertPullRequest: row.revert_pull_request ?? null,
 });
 
 const today = (): string => new Date().toISOString().slice(0, 10);
+
+/** Stopping abandons unshipped work. Finished Jobs and reverts have none to abandon. */
+const NOT_STOPPABLE: ReadonlySet<JobState> = new Set<JobState>([
+  'done',
+  'rejected',
+  'failed',
+  'reverting',
+  'revert_review',
+  'revert_merging',
+  'reverted',
+]);
 
 const parseAttachments = (raw: string | null): Attachment[] => {
   if (!raw) return [];
@@ -125,7 +142,8 @@ export class JobStore {
         pull_request INTEGER,
         preview_url TEXT,
         failed_from TEXT,
-        attachments TEXT NOT NULL DEFAULT '[]'
+        attachments TEXT NOT NULL DEFAULT '[]',
+        revert_pull_request INTEGER
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +165,13 @@ export class JobStore {
     // Databases created before attachments existed are missing this column.
     try {
       this.#db.exec("ALTER TABLE jobs ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      // Already present.
+    }
+
+    // Databases created before reverts existed are missing this column.
+    try {
+      this.#db.exec('ALTER TABLE jobs ADD COLUMN revert_pull_request INTEGER');
     } catch {
       // Already present.
     }
@@ -188,12 +213,12 @@ export class JobStore {
 
   liveJobs(): Job[] {
     const rows = this.#db
-      .prepare("SELECT * FROM jobs WHERE state NOT IN ('done', 'rejected', 'failed') ORDER BY id")
+      .prepare("SELECT * FROM jobs WHERE state NOT IN ('done', 'reverted', 'rejected', 'failed') ORDER BY id")
       .all() as unknown as JobRow[];
     return rows.map(toJob);
   }
 
-  update(id: string, fields: Partial<Pick<JobRow, 'slack_thread_ts' | 'slug' | 'branch' | 'pull_request' | 'preview_url'>>): Job {
+  update(id: string, fields: Partial<Pick<JobRow, 'slack_thread_ts' | 'slug' | 'branch' | 'pull_request' | 'preview_url' | 'revert_pull_request'>>): Job {
     const entries = Object.entries(fields);
     if (entries.length > 0) {
       const assignments = entries.map(([column]) => `${column} = ?`).join(', ');
@@ -225,7 +250,7 @@ export class JobStore {
   /** Stops a live Job from any phase or gate. The rejected state is the terminal, non-shipping state. */
   cancel(id: string, actor: string): Job | null {
     const job = this.#require(id);
-    if (job.state === 'done' || job.state === 'rejected' || job.state === 'failed') return null;
+    if (NOT_STOPPABLE.has(job.state)) return null;
 
     this.#record(id, 'cancelled', actor, null);
     return this.#setState(id, 'rejected');
@@ -250,6 +275,26 @@ export class JobStore {
     return this.#setState(id, target.failed_from as JobState);
   }
 
+  /** A human asked to undo a finished Job. Only a done Job has shipped work to revert. */
+  requestRevert(id: string, actor: string, reason: string | null): Job | null {
+    const job = this.#require(id);
+    if (job.state !== 'done') return null;
+
+    this.#record(id, 'revert_requested', actor, reason);
+    return this.#setState(id, 'reverting');
+  }
+
+  /** The pull request had not merged, so closing it undid everything without a revert. */
+  revertedBeforeMerge(id: string): Job {
+    const job = this.#require(id);
+    if (job.state !== 'reverting') {
+      throw new Error(`${id} is not reverting; it is at ${job.state}`);
+    }
+
+    this.#record(id, 'phase_completed', 'system', 'closed before merge');
+    return this.#setState(id, 'reverted');
+  }
+
   /** A human approved at a Gate. */
   approve(id: string, actor: string): Job {
     const gate = this.#requireGate(id);
@@ -259,7 +304,12 @@ export class JobStore {
 
   /** A human rejected at a Gate. */
   reject(id: string, actor: string, feedback: string | null = null): Job {
-    this.#requireGate(id);
+    // Rejecting a revert keeps the shipped work, so the Job goes back to done.
+    if (this.#requireGate(id) === 'revert_review') {
+      this.#record(id, 'revert_cancelled', actor, feedback);
+      return this.#setState(id, 'done');
+    }
+
     this.#record(id, 'rejected', actor, feedback);
     return this.#setState(id, 'rejected');
   }
@@ -270,7 +320,8 @@ export class JobStore {
    */
   recordFeedback(id: string, actor: string, feedback: string, attachments: Attachment[] = []): Job | null {
     const job = this.#require(id);
-    if (!isGate(job.state)) return null;
+    const next = isGate(job.state) ? afterFeedback(job.state) : null;
+    if (!next) return null;
 
     this.#record(id, 'changes_requested', actor, feedback);
     if (attachments.length > 0) {
@@ -281,7 +332,7 @@ export class JobStore {
         .prepare('UPDATE jobs SET attachments = ? WHERE id = ?')
         .run(JSON.stringify([...merged.values()]), id);
     }
-    return this.#setState(id, afterFeedback(job.state));
+    return this.#setState(id, next);
   }
 
   /** Feedback the next Phase must act on, or null if none is outstanding. */

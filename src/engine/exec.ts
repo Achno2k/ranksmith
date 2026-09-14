@@ -10,6 +10,8 @@ export interface ExecResult {
 export interface ExecOptions {
   cwd?: string;
   timeoutMs?: number;
+  /** Written to stdin before it is closed. */
+  input?: string;
 }
 
 /**
@@ -31,8 +33,12 @@ export function tryRun(command: string, args: string[], options: ExecOptions = {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Closed straight away, so a command that reads stdin sees end-of-file instead of waiting.
+    child.stdin.on('error', () => {});
+    child.stdin.end(options.input ?? '');
 
     let stdout = '';
     let stderr = '';

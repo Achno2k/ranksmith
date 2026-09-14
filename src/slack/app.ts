@@ -173,11 +173,56 @@ export function createNotifier(app: SlackApp): Notifier {
       await finishStatus(job, 'Stopped by request.');
       await post(job, messages.stopped(job));
     },
+    revertReady: async (job, prUrl) => {
+      await finishStatus(job, 'Revert pull request open — waiting for review.');
+      await post(job, messages.revertReady(job, prUrl));
+    },
+    reverted: async (job, prUrl) => {
+      await finishStatus(job, 'Revert complete.');
+      await post(job, messages.reverted(job, prUrl));
+    },
+    revertCancelled: async (job) => {
+      await finishStatus(job, 'Revert cancelled.');
+      await post(job, messages.revertCancelled(job));
+    },
   };
 }
 
 export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, config: SlackConfig): void {
   const allowed = (userId: string) => config.approvers.length === 0 || config.approvers.includes(userId);
+
+  /** A mention in a Job thread: triage says what it is, the Engine decides whether it is allowed now. */
+  const answerInThread = async (
+    jobId: string,
+    userId: string,
+    prompt: string,
+    attachments: AttachmentInput[],
+    reply: (text: string) => Promise<void>,
+  ): Promise<void> => {
+    const triage = await engine.triage(jobId, prompt).catch((error: unknown) => {
+      console.error(`[${jobId}] could not triage a mention:`, error);
+      return null;
+    });
+    if (!triage) return reply(messages.triageFailed);
+
+    // Triage can take a minute. Act on the Job as it is now, not as it was when mentioned.
+    const job = jobs.getJob(jobId);
+    if (!job) return;
+
+    switch (triage.intent) {
+      case 'question':
+        return reply(triage.answer || messages.triageFailed);
+      case 'feedback':
+        if (!(await engine.feedback(job.id, userId, prompt, attachments))) await reply(messages.feedbackNotReady(job));
+        return;
+      case 'revert':
+        if (!(await engine.revert(job.id, userId, prompt))) await reply(messages.revertNotAvailable(job));
+        return;
+      case 'stop':
+        if (!(await engine.stop(job.id, userId))) await reply(messages.stopNotActive(job));
+        return;
+    }
+  };
 
   app.command('/seo', async ({ ack, command, respond }) => {
     await ack();
@@ -232,6 +277,11 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
       ? jobs.jobForThread(event.channel, event.thread_ts)
       : null;
 
+    // Everyone reviewing a Job reads its thread, so replies there are never ephemeral.
+    const reply = async (text: string): Promise<void> => {
+      await client.chat.postMessage({ channel: event.channel, thread_ts: threadForMention(event), text });
+    };
+
     if (isStopCommand(prompt)) {
       if (!threadJob) {
         await client.chat.postEphemeral({
@@ -240,11 +290,7 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
           text: messages.stopInJobThread,
         });
       } else if (!(await engine.stop(threadJob.id, event.user))) {
-        await client.chat.postEphemeral({
-          channel: event.channel,
-          user: event.user,
-          text: messages.stopNotActive(threadJob),
-        });
+        await reply(messages.stopNotActive(threadJob));
       }
       return;
     }
@@ -253,16 +299,9 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
     const { attachments, cleanup } = await collectAttachments(files, config.botToken);
 
     try {
-      // A mention inside an existing Job thread is review feedback, not a second Job.
+      // A mention inside an existing Job thread is about that Job, never a second Job.
       if (threadJob) {
-        const accepted = await engine.feedback(threadJob.id, event.user, prompt, attachments);
-        if (!accepted) {
-          await client.chat.postEphemeral({
-            channel: event.channel,
-            user: event.user,
-            text: messages.feedbackNotReady(threadJob),
-          });
-        }
+        await answerInThread(threadJob.id, event.user, prompt, attachments, reply);
         return;
       }
 

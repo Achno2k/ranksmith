@@ -32,6 +32,18 @@ A point where a Job stops and waits for a human. Only a human action moves a Job
 through a Gate. An agent may never infer that a Gate was passed, and discussion is
 not approval.
 
+## Revert
+
+Undoing a `done` Job's merged work with a new pull request. It goes through its own
+Gate like any shipping change. Rejecting a Revert returns the Job to `done`; the
+shipped content stays.
+
+## Triage
+
+Reading what a mention in a Job thread wants: a question, feedback, a Revert, or a
+stop. Triage is read-only and only names the intent. The Engine alone decides whether
+that intent is allowed in the Job's current state.
+
 ## Artifact
 
 A file written by one Phase and read by the next. Artifacts are the only continuity
