@@ -2,11 +2,11 @@
   "id": "connectmachine",
   "jobPrefix": "CM",
   "repo": {
-    "path": "/Users/amansingh/LambdaTest/website",
+    "path": "/Users/amansingh/LambdaTest/website-v2",
     "baseRemote": "upstream",
     "baseBranch": "main",
     "pushRemote": "origin",
-    "pullRequestRepo": "connectmachine/website",
+    "pullRequestRepo": "connectmachine/website-v2",
     "branchPrefix": "feat/seo-"
   },
   "commands": {

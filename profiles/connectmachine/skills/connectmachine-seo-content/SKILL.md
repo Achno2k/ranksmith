@@ -1,6 +1,6 @@
 ---
 name: connectmachine-seo-content
-description: Research, rank, draft, and validate SEO content for connectmachine/website. Use for ConnectMachine topic discovery, keyword research, content briefs, cannibalization checks, and blog/use-case/profession/comparison content.
+description: Research, rank, draft, and validate SEO content for connectmachine/website-v2. Use for ConnectMachine topic discovery, keyword research, content briefs, cannibalization checks, and blog/use-case/profession/comparison content.
 ---
 
 # ConnectMachine SEO Content
