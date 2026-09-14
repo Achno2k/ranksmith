@@ -1,9 +1,11 @@
 import pkg from '@slack/bolt';
+import type { KnownBlock } from '@slack/types';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Engine, Notifier } from '../engine/engine.ts';
 import type { AttachmentInput, Job, JobStore } from '../engine/jobs.ts';
+import { isGate } from '../engine/states.ts';
 import { downloadAttachments, type SlackFile } from './attachments.ts';
 import * as messages from './messages.ts';
 
@@ -33,6 +35,12 @@ export const isStopCommand = (prompt: string): boolean => /^stop[.!]?$/i.test(pr
 
 export const threadForMention = (event: { ts: string; thread_ts?: string }): string =>
   event.thread_ts ?? event.ts;
+
+/** Reads a gate button. Buttons posted before values named their Gate carry only the Job id. */
+export function parseGateValue(value: string): { jobId: string; gate: string | null } {
+  const [jobId = '', gate] = value.split(':');
+  return { jobId, gate: gate ?? null };
+}
 
 const LOADER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
 const LOADER_FRAME_MS = 5_000;
@@ -311,25 +319,48 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
     }
   });
 
-  const gateAction = (actionId: string, act: (jobId: string, userId: string) => Promise<void>) =>
+  const gateAction = (
+    actionId: string,
+    outcome: string,
+    act: (jobId: string, userId: string) => Promise<void>,
+  ) =>
     app.action(actionId, async ({ ack, body, client, action }) => {
       await ack();
-      const jobId = 'value' in action ? String(action.value) : '';
+      const { jobId, gate } = parseGateValue('value' in action ? String(action.value) : '');
       const userId = body.user.id;
+      const channel = body.channel?.id;
 
       if (!allowed(userId)) {
-        const channel = body.channel?.id;
         if (channel) {
           await client.chat.postEphemeral({ channel, user: userId, text: messages.notApprover });
         }
         return;
       }
 
-      await act(jobId, userId);
+      const job = jobs.getJob(jobId);
+      const waiting = job !== null && isGate(job.state) && (gate === null || gate === job.state);
+
+      // The Engine moves the Job off its Gate before its first await, so starting the action
+      // before editing the message means a double click finds nothing left to act on.
+      const acting = waiting
+        ? act(jobId, userId).catch((error: unknown) => console.error(`[${jobId}] ${actionId} failed:`, error))
+        : null;
+
+      const message = (body as { message?: { ts: string; blocks?: KnownBlock[] } }).message;
+      if (channel && message) {
+        const note = waiting
+          ? `${outcome} by <@${userId}>`
+          : `:information_source: No longer waiting for this review${job ? ` (now \`${job.state}\`)` : ''}.`;
+        await client.chat
+          .update({ channel, ts: message.ts, text: note, blocks: messages.decided(message.blocks ?? [], note) })
+          .catch((error: unknown) => console.error(`[${jobId}] could not remove gate buttons:`, error));
+      }
+
+      await acting;
     });
 
-  gateAction('ranksmith_approve', (jobId, userId) => engine.approve(jobId, userId));
-  gateAction('ranksmith_reject', (jobId, userId) => engine.reject(jobId, userId, null));
+  gateAction('ranksmith_approve', ':white_check_mark: *Approved*', (jobId, userId) => engine.approve(jobId, userId));
+  gateAction('ranksmith_reject', ':x: *Rejected*', (jobId, userId) => engine.reject(jobId, userId, null));
 
   // Plain thread replies are intentionally ignored. Feedback and stop commands must
   // explicitly mention RankSmith, preventing ordinary conversation from starting work.

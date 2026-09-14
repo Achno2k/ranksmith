@@ -6,7 +6,16 @@ const bullets = (values: unknown): string[] =>
 
 const section = (text: string): KnownBlock => ({ type: 'section', text: { type: 'mrkdwn', text } });
 
-const gate = (jobId: string): KnownBlock => ({
+/** Ties a button to the Gate it was posted for, so an old message cannot approve a later Gate. */
+export const gateValue = (job: Job): string => `${job.id}:${job.state}`;
+
+/** A posted gate message with its buttons and hint replaced by what happened. */
+export const decided = (blocks: KnownBlock[], note: string): KnownBlock[] => [
+  ...blocks.filter((block) => block.type !== 'actions' && block.type !== 'context'),
+  { type: 'context', elements: [{ type: 'mrkdwn', text: note }] },
+];
+
+const gate = (job: Job): KnownBlock => ({
   type: 'actions',
   elements: [
     {
@@ -14,14 +23,14 @@ const gate = (jobId: string): KnownBlock => ({
       action_id: 'ranksmith_approve',
       style: 'primary',
       text: { type: 'plain_text', text: 'Approve' },
-      value: jobId,
+      value: gateValue(job),
     },
     {
       type: 'button',
       action_id: 'ranksmith_reject',
       style: 'danger',
       text: { type: 'plain_text', text: 'Reject' },
-      value: jobId,
+      value: gateValue(job),
     },
   ],
 });
@@ -54,7 +63,7 @@ export function researchReady(job: Job, result: Record<string, unknown>, filenam
       : ':warning: Research attachment failed to upload. Ask the RankSmith operator to check `files:write`.',
   ];
 
-  return { text: `${job.id} research ready`, blocks: [section(lines.join('\n')), gate(job.id), hint] };
+  return { text: `${job.id} research ready`, blocks: [section(lines.join('\n')), gate(job), hint] };
 }
 
 export function contentReady(job: Job, prUrl: string) {
@@ -65,7 +74,7 @@ export function contentReady(job: Job, prUrl: string) {
     `Pull request: ${prUrl}`,
   ];
 
-  return { text: `${job.id} content ready`, blocks: [section(lines.join('\n')), gate(job.id), hint] };
+  return { text: `${job.id} content ready`, blocks: [section(lines.join('\n')), gate(job), hint] };
 }
 
 export const working = (job: Job, note: string, loader = '⠋') => ({
@@ -109,7 +118,7 @@ export function revertReady(job: Job, prUrl: string) {
     'Approving queues it to merge behind CI, which takes the content off staging.',
   ];
 
-  return { text: `${job.id} revert ready`, blocks: [section(lines.join('\n')), gate(job.id)] };
+  return { text: `${job.id} revert ready`, blocks: [section(lines.join('\n')), gate(job)] };
 }
 
 export const reverted = (job: Job, prUrl: string | null) => ({

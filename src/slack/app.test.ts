@@ -1,6 +1,33 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { isStopCommand, promptFromMention, threadForMention } from './app.ts';
+import type { KnownBlock } from '@slack/types';
+import type { Job } from '../engine/jobs.ts';
+import { isStopCommand, parseGateValue, promptFromMention, threadForMention } from './app.ts';
+import { contentReady, decided, gateValue } from './messages.ts';
+
+describe('gate buttons', () => {
+  const job = { id: 'CM-002', state: 'content_review', previewUrl: null } as Job;
+
+  it('name the gate they were posted for', () => {
+    assert.deepEqual(parseGateValue(gateValue(job)), { jobId: 'CM-002', gate: 'content_review' });
+  });
+
+  it('still read buttons posted before values named their gate', () => {
+    assert.deepEqual(parseGateValue('CM-001'), { jobId: 'CM-001', gate: null });
+  });
+
+  it('come off the message once decided, leaving the content', () => {
+    const blocks = contentReady(job, 'https://github.com/x/y/pull/35').blocks as KnownBlock[];
+    const after = decided(blocks, 'Approved by <@U1>');
+
+    assert.deepEqual(
+      after.map((block) => block.type),
+      ['section', 'context'],
+    );
+    assert.match(JSON.stringify(after), /pull\/35/);
+    assert.match(JSON.stringify(after.at(-1)), /Approved by <@U1>/);
+  });
+});
 
 describe('placing a mentioned Job', () => {
   it('uses a root mention as the pipeline thread', () => {
