@@ -3,8 +3,10 @@ import {
   afterApproval,
   afterFeedback,
   afterPhase,
+  initialState,
   isGate,
   isRunning,
+  type JobKind,
   type JobState,
 } from './states.ts';
 
@@ -20,6 +22,8 @@ export interface AttachmentInput extends Attachment {
 export interface Job {
   id: string;
   profile: string;
+  kind: JobKind;
+  /** The research topic of a seo Job, or the focus of a marketing scan. Null means discover. */
   topic: string | null;
   state: JobState;
   slackChannel: string;
@@ -38,6 +42,7 @@ export interface Job {
 export interface NewJob {
   profile: string;
   jobPrefix: string;
+  kind?: JobKind;
   topic: string | null;
   slackChannel: string;
   attachments: Attachment[];
@@ -64,6 +69,7 @@ export interface JobEvent {
 interface JobRow {
   id: string;
   profile: string;
+  kind: string | null;
   topic: string | null;
   state: string;
   slack_channel: string;
@@ -86,6 +92,7 @@ interface EventRow {
 const toJob = (row: JobRow): Job => ({
   id: row.id,
   profile: row.profile,
+  kind: row.kind === 'marketing' ? 'marketing' : 'seo',
   topic: row.topic,
   state: row.state as JobState,
   slackChannel: row.slack_channel,
@@ -143,7 +150,8 @@ export class JobStore {
         preview_url TEXT,
         failed_from TEXT,
         attachments TEXT NOT NULL DEFAULT '[]',
-        revert_pull_request INTEGER
+        revert_pull_request INTEGER,
+        kind TEXT NOT NULL DEFAULT 'seo'
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,13 +183,20 @@ export class JobStore {
     } catch {
       // Already present.
     }
+
+    // Databases created before marketing Jobs existed are missing this column.
+    try {
+      this.#db.exec("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'seo'");
+    } catch {
+      // Already present.
+    }
   }
 
   close(): void {
     this.#db.close();
   }
 
-  createJob({ profile, jobPrefix, topic, slackChannel, attachments }: NewJob): Job {
+  createJob({ profile, jobPrefix, kind = 'seo', topic, slackChannel, attachments }: NewJob): Job {
     const { next } = this.#db
       .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM jobs WHERE profile = ?')
       .get(profile) as { next: number };
@@ -189,10 +204,10 @@ export class JobStore {
 
     this.#db
       .prepare(
-        `INSERT INTO jobs (id, profile, topic, state, slack_channel, seq, date, attachments)
-         VALUES (?, ?, ?, 'researching', ?, ?, ?, ?)`,
+        `INSERT INTO jobs (id, profile, kind, topic, state, slack_channel, seq, date, attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, profile, topic, slackChannel, next, today(), JSON.stringify(attachments));
+      .run(id, profile, kind, topic, initialState(kind), slackChannel, next, today(), JSON.stringify(attachments));
     this.#record(id, 'job_created', 'system', null);
 
     return this.getJob(id)!;
@@ -275,10 +290,13 @@ export class JobStore {
     return this.#setState(id, target.failed_from as JobState);
   }
 
-  /** A human asked to undo a finished Job. Only a done Job has shipped work to revert. */
+  /**
+   * A human asked to undo a finished Job. Only a done Job has shipped work to revert, and
+   * a marketing Job never ships anything.
+   */
   requestRevert(id: string, actor: string, reason: string | null): Job | null {
     const job = this.#require(id);
-    if (job.state !== 'done') return null;
+    if (job.state !== 'done' || job.kind !== 'seo') return null;
 
     this.#record(id, 'revert_requested', actor, reason);
     return this.#setState(id, 'reverting');

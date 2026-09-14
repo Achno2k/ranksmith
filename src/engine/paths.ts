@@ -7,13 +7,13 @@ export const ranksmithHome = (): string => process.env['RANKSMITH_HOME'] ?? join
 const repoRoot = (): string => fileURLToPath(new URL('../..', import.meta.url));
 
 /**
- * A copy of a Job's research, dropped inside this repo purely so it can be read in an
+ * A copy of a Job's report, dropped inside this repo purely so it can be read in an
  * editor without digging into a worktree. Git-ignored, and read-only in practice: the
  * agent's copy in the Workspace is the one that ships. Temporary — when this runs for
  * real, research should be reviewed from the pull request instead.
  */
-export const reviewDocPath = (jobId: string, date: string): string =>
-  join(repoRoot(), 'research', `${jobId}-${date}-research.md`);
+export const reviewDocPath = (jobId: string, date: string, name = 'research.md'): string =>
+  join(repoRoot(), 'research', `${jobId}-${date}-${name}`);
 
 export const databasePath = (): string => join(ranksmithHome(), 'ranksmith.db');
 

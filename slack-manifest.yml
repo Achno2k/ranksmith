@@ -12,6 +12,10 @@ features:
       description: Start an SEO content job
       usage_hint: "[topic] — leave empty to let it discover one"
       should_escape: false
+    - command: /marketing
+      description: Scan for marketing opportunities and rank them
+      usage_hint: "[focus] — an event, a lane, a segment, or empty for every lane"
+      should_escape: false
 
 oauth_config:
   scopes:

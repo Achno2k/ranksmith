@@ -1,6 +1,7 @@
 # RankSmith
 
-SEO content automation. Slack gates, agent backends execute, git remembers.
+SEO content and marketing research automation. Slack gates, agent backends execute,
+git remembers.
 
 Read [CONTEXT.md](CONTEXT.md) for the vocabulary and [docs/adr](docs/adr) for why the
 shape is what it is.
@@ -43,6 +44,28 @@ Rejecting the revert closes its PR and returns the Job to `done`. If the origina
 merged yet, the Engine closes it and the Job goes straight to `reverted`. A revert that
 conflicts with later changes fails and lists the conflicting files.
 
+## Marketing scans
+
+A second kind of Job. It never touches the site: the output is a report, not a pull request.
+
+```
+/marketing [focus]  or  @RankSmith marketing [focus]
+  → MARKETING_SCANNING   claude, in a scratch directory (no worktree, no git)
+  → MARKETING_REVIEW     ● gate: Approve (closes the job) / Reject / reply with feedback
+  → DONE
+```
+
+The focus is free text: an event ("SaaStr Annual 2026"), a lane ("partnerships"), a segment
+("recruiters"), or nothing, which scans every lane. The agent works through events,
+communities, partnerships and integrations, media and creators, review sites, competitor
+gaps, PR and awards, and content tie-ins, then ranks what it found across all of them.
+
+It posts two files into the thread: `docs/marketing/<date>-opportunities.md` (summary,
+ranked top 10 with next actions and evidence, drafts, `/seo` handoffs, gaps) and
+`docs/marketing/<date>-targets.csv` (one row per person or organisation, each with a source
+URL). Nothing is sent, posted, or imported into a CRM. Feedback at the gate sends it back for
+a deeper pass. The agent may read the site checkout for product facts but cannot edit it.
+
 ## Setup
 
 ```bash
@@ -57,9 +80,10 @@ before linking. It does not delete anything.
 
 The Slack app needs Socket Mode, an app-level token with `connections:write`, and bot
 scopes `chat:write`, `commands`, `files:write`, `files:read`, `users:read`,
-`app_mentions:read`, `reactions:write`, `channels:history`, and `groups:history`. Add a
-`/seo` slash command and subscribe to the `app_mention` event. Start a Job with `/seo
-[topic]` or by writing `@RankSmith [research prompt]` in a channel or thread. Mentioned
+`app_mentions:read`, `reactions:write`, `channels:history`, and `groups:history`. Add the
+`/seo` and `/marketing` slash commands and subscribe to the `app_mention` event. Start a Job
+with `/seo [topic]` or by writing `@RankSmith [research prompt]` in a channel or thread;
+`@RankSmith marketing [focus]` starts a marketing scan instead. Mentioned
 Jobs react with :eyes: and keep all pipeline updates in the thread where RankSmith was
 tagged. RankSmith uses `files:write` to attach each completed research document directly
 to its Slack review thread.
@@ -73,6 +97,7 @@ replaces it.
 
 ```bash
 npm start                              # run the Slack engine
+npm run job -- marketing [focus]       # marketing scan from the terminal
 npm run job -- status CM-002           # inspect a Job's persisted state
 npm test                               # node:test across the tested seams
 npm run typecheck

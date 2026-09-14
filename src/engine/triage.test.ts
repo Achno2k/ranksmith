@@ -6,6 +6,7 @@ import { buildTriage, parseTriage } from './triage.ts';
 const JOB: Job = {
   id: 'CM-001',
   profile: 'connectmachine',
+  kind: 'seo',
   topic: 'camcard alternative',
   state: 'done',
   slackChannel: 'C123',

@@ -14,15 +14,34 @@ export const JOB_STATES = [
   'reverted',
   'rejected',
   'failed',
+  'marketing_scanning',
+  'marketing_review',
+  'marketing_revising',
 ] as const;
 
 export type JobState = (typeof JOB_STATES)[number];
 
 /**
+ * What a Job is for. A seo Job ships content through a pull request; a marketing Job
+ * ends at a reviewed report and never touches the site.
+ */
+export const JOB_KINDS = ['seo', 'marketing'] as const;
+
+export type JobKind = (typeof JOB_KINDS)[number];
+
+/** Where a Job of each kind begins. */
+const INITIAL_STATE = {
+  seo: 'researching',
+  marketing: 'marketing_scanning',
+} as const satisfies Record<JobKind, JobState>;
+
+export const initialState = (kind: JobKind): JobState => INITIAL_STATE[kind];
+
+/**
  * States where the Job waits for a human. Only a human action moves a Job out of
  * one of these — the Engine never does, and an agent may never infer approval.
  */
-export const GATES = ['research_review', 'content_review', 'revert_review'] as const;
+export const GATES = ['research_review', 'content_review', 'revert_review', 'marketing_review'] as const;
 
 export type Gate = (typeof GATES)[number];
 
@@ -38,6 +57,8 @@ const AFTER_PHASE = {
   merging: 'done',
   reverting: 'revert_review',
   revert_merging: 'reverted',
+  marketing_scanning: 'marketing_review',
+  marketing_revising: 'marketing_review',
 } as const satisfies Partial<Record<JobState, JobState>>;
 
 export type RunningState = keyof typeof AFTER_PHASE;
@@ -51,6 +72,8 @@ const AFTER_APPROVAL = {
   research_review: 'generating',
   content_review: 'merging',
   revert_review: 'revert_merging',
+  // A marketing report has nothing to ship, so approval simply closes the Job.
+  marketing_review: 'done',
 } as const satisfies Record<Gate, JobState>;
 
 export const afterApproval = (gate: Gate): JobState => AFTER_APPROVAL[gate];
@@ -62,6 +85,7 @@ export const afterApproval = (gate: Gate): JobState => AFTER_APPROVAL[gate];
 const AFTER_FEEDBACK: Partial<Record<Gate, JobState>> = {
   research_review: 'research_revising',
   content_review: 'content_revising',
+  marketing_review: 'marketing_revising',
 };
 
 export const afterFeedback = (gate: Gate): JobState | null => AFTER_FEEDBACK[gate] ?? null;

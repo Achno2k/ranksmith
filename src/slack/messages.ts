@@ -41,12 +41,39 @@ const hint: KnownBlock = {
 };
 
 export function jobStarted(job: Job) {
-  const lines = [
-    `*${job.id} started*`,
-    '',
-    job.topic ? `Topic: ${job.topic}` : 'Mode: discovery — surveying the site and market.',
-  ];
+  const mode =
+    job.kind === 'marketing'
+      ? job.topic
+        ? `Marketing scan. Focus: ${job.topic}`
+        : 'Marketing scan. Mode: full scan across every lane.'
+      : job.topic
+        ? `Topic: ${job.topic}`
+        : 'Mode: discovery — surveying the site and market.';
+  const lines = [`*${job.id} started*`, '', mode];
   return { text: `${job.id} started`, blocks: [section(lines.join('\n'))] };
+}
+
+export function marketingReady(job: Job, result: Record<string, unknown>, filenames: string[]) {
+  const lines = [
+    `*${job.id} — marketing opportunities ready*`,
+    '',
+    `*Focus:* ${String(result['focus'] ?? (job.topic ?? 'full scan'))}`,
+    `*Summary:* ${String(result['summary'] ?? 'see report')}`,
+    `*Opportunities found:* ${String(result['opportunity_count'] ?? '—')}`,
+    '',
+    '*Top opportunities*',
+    ...bullets(result['top_opportunities']),
+    ...(Array.isArray(result['seo_handoffs']) && result['seo_handoffs'].length > 0
+      ? ['', '*Worth a `/seo` job*', ...bullets(result['seo_handoffs'])]
+      : []),
+    '',
+    filenames.length > 0
+      ? `Full report and targets: attached in this thread as ${filenames.map((name) => `\`${name}\``).join(' and ')}.`
+      : ':warning: Report attachments failed to upload. Ask the RankSmith operator to check `files:write`.',
+    'Approving closes the job. Nothing is sent, posted, or imported.',
+  ];
+
+  return { text: `${job.id} marketing opportunities ready`, blocks: [section(lines.join('\n')), gate(job), hint] };
 }
 
 export function researchReady(job: Job, result: Record<string, unknown>, filename: string | null) {
@@ -101,7 +128,8 @@ export const failed = (job: Job, reason: string) => ({
 
 export const notApprover = 'You are not an approver for RankSmith jobs.';
 
-export const mentionUsage = 'Give RankSmith a topic or request, for example: `@RankSmith research event lead capture`.';
+export const mentionUsage =
+  'Give RankSmith a topic or request, for example: `@RankSmith research event lead capture`, or `@RankSmith marketing` for a marketing scan.';
 
 export const feedbackNotReady = (job: Job) =>
   `${job.id} is currently \`${job.state}\`. Mention feedback is accepted when the Job is waiting for review.`;

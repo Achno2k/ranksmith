@@ -1,9 +1,20 @@
 import type { JobState } from './states.ts';
 
 /** The Phases that hand work to an agent. Preview and merge are the Engine's own work. */
-export const AGENT_PHASES = ['research', 'research_revision', 'content', 'content_revision'] as const;
+export const AGENT_PHASES = [
+  'research',
+  'research_revision',
+  'content',
+  'content_revision',
+  'marketing',
+  'marketing_revision',
+] as const;
 
 export type PhaseName = (typeof AGENT_PHASES)[number];
+
+/** The Phases that produce a marketing report instead of touching the site. */
+export const isMarketingPhase = (phase: PhaseName): boolean =>
+  phase === 'marketing' || phase === 'marketing_revision';
 
 export type BackendName = 'codex' | 'claude';
 
@@ -18,6 +29,11 @@ export interface Budgets {
   webSearches: number;
   competitorPages: number;
   ahrefsOperations: number;
+  /** A marketing scan covers every lane in one pass, so it gets more than one SEO topic does. */
+  marketing: {
+    webSearches: number;
+    pagesFetched: number;
+  };
 }
 
 /**
@@ -57,6 +73,8 @@ const PHASE_FOR_STATE = {
   research_revising: 'research_revision',
   generating: 'content',
   content_revising: 'content_revision',
+  marketing_scanning: 'marketing',
+  marketing_revising: 'marketing_revision',
 } as const satisfies Partial<Record<JobState, PhaseName>>;
 
 export const phaseForState = (state: JobState): PhaseName | null =>

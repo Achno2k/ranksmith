@@ -8,6 +8,7 @@ import { databasePath, jobDir, ranksmithHome, workspacePath } from './engine/pat
 const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
 
   npm run job -- start [topic]     start a job; empty topic means discovery
+  npm run job -- marketing [focus] start a marketing scan; empty focus means every lane
   npm run job -- approve <id>      approve at the job's current gate
   npm run job -- feedback <id> "…" send the job back for a revision
   npm run job -- retry <id>        re-run a failed job from where it died
@@ -22,8 +23,28 @@ const say = (line: string) => console.log(`${stamp()}  ${line}`);
 /** The Slack notifier's counterpart. Same Engine, same code path, different audience. */
 const consoleNotifier: Notifier = {
   jobStarted: async (job) => {
-    say(`${job.id} started — ${job.topic ? `topic: ${job.topic}` : 'discovery mode'}`);
+    const mode =
+      job.kind === 'marketing'
+        ? `marketing scan, ${job.topic ? `focus: ${job.topic}` : 'every lane'}`
+        : job.topic
+          ? `topic: ${job.topic}`
+          : 'discovery mode';
+    say(`${job.id} started — ${mode}`);
     return 'cli';
+  },
+  marketingReady: async (job, result, reportPath, csvPath) => {
+    say(`${job.id} MARKETING OPPORTUNITIES READY`);
+    console.log(`
+  focus    : ${String(result['focus'] ?? job.topic ?? 'full scan')}
+  summary  : ${String(result['summary'] ?? '—')}
+  found    : ${String(result['opportunity_count'] ?? '—')}
+  report   : ${relative(process.cwd(), reportPath)}
+  targets  : ${relative(process.cwd(), csvPath)}
+  budget   : ${JSON.stringify(result['budget_used'] ?? {})}
+
+  next: npm run job -- approve ${job.id}
+        npm run job -- feedback ${job.id} "what to change"
+`);
   },
   working: async (job, note) => say(`${job.id} ${note}`),
   researchReady: async (job, result, documentPath) => {
@@ -76,7 +97,7 @@ const consoleNotifier: Notifier = {
 };
 
 const describe = (job: Job) =>
-  `${job.id}  ${job.state.padEnd(20)} ${job.topic ?? '(discovery)'}${job.pullRequest ? `  PR #${job.pullRequest}` : ''}`;
+  `${job.id}  ${job.kind.padEnd(9)} ${job.state.padEnd(20)} ${job.topic ?? (job.kind === 'marketing' ? '(every lane)' : '(discovery)')}${job.pullRequest ? `  PR #${job.pullRequest}` : ''}`;
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -94,10 +115,11 @@ const requireId = (): string => {
 
 try {
   switch (command) {
-    case 'start': {
+    case 'start':
+    case 'marketing': {
       await verifySkillLinks(profile.id);
       const topic = rest.join(' ').trim();
-      await engine.startJob(topic === '' ? null : topic, 'cli');
+      await engine.startJob(topic === '' ? null : topic, 'cli', null, [], command === 'marketing' ? 'marketing' : 'seo');
       await engine.whenIdle();
       break;
     }

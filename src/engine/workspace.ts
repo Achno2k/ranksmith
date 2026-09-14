@@ -39,6 +39,17 @@ export async function createWorkspace(
 }
 
 /**
+ * A plain directory for a Job that never touches the site: no worktree, no branch, no
+ * install. Lives at the same path as a worktree would, so teardown is the same code.
+ */
+export async function createScratchWorkspace(jobId: string): Promise<string> {
+  const dir = workspacePath(jobId);
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(join(dir, RESULT_PATH, '..'), { recursive: true });
+  return dir;
+}
+
+/**
  * Keeps the runner's own scratch directory out of the website's history. Agents commit
  * with `git add -A`, so without this the result file would ship in the pull request.
  */

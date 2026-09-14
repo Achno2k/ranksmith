@@ -135,3 +135,44 @@ describe('validating a phase contract', () => {
     assert.deepEqual(await validateContract(dir, RESEARCH_CONTRACT), { ok: true });
   });
 });
+
+describe('validating a csv requirement', () => {
+  const TARGETS: PhaseContract = {
+    files: [{ path: 'docs/marketing/targets.csv', kind: 'csv', columns: ['name', 'source_url', 'next_action'] }],
+  };
+
+  it('passes when the header has every column and there is a row', async () => {
+    const dir = await workspace({
+      'docs/marketing/targets.csv': 'name,org,source_url,next_action\nAda,Acme,https://x.test/ada,email\n',
+    });
+
+    assert.deepEqual(await validateContract(dir, TARGETS), { ok: true });
+  });
+
+  it('ignores column order, case, and quoting in the header', async () => {
+    const dir = await workspace({
+      'docs/marketing/targets.csv': '"Next_Action","Source_URL","Name"\nemail,https://x.test,Ada\n',
+    });
+
+    assert.deepEqual(await validateContract(dir, TARGETS), { ok: true });
+  });
+
+  it('names every missing column', async () => {
+    const dir = await workspace({ 'docs/marketing/targets.csv': 'name,org\nAda,Acme\n' });
+
+    const result = await validateContract(dir, TARGETS);
+
+    assert.deepEqual(result.gaps, [
+      'docs/marketing/targets.csv: missing column "source_url"',
+      'docs/marketing/targets.csv: missing column "next_action"',
+    ]);
+  });
+
+  it('rejects a header with nothing under it', async () => {
+    const dir = await workspace({ 'docs/marketing/targets.csv': 'name,source_url,next_action\n\n' });
+
+    const result = await validateContract(dir, TARGETS);
+
+    assert.deepEqual(result.gaps, ['docs/marketing/targets.csv: no rows below the header']);
+  });
+});

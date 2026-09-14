@@ -9,7 +9,7 @@ export interface PhaseContract {
   files: FileRequirement[];
 }
 
-export type FileRequirement = MarkdownRequirement | JsonRequirement;
+export type FileRequirement = MarkdownRequirement | JsonRequirement | CsvRequirement;
 
 export interface MarkdownRequirement {
   path: string;
@@ -23,6 +23,13 @@ export interface JsonRequirement {
   kind: 'json';
   /** Top-level keys that must be present and non-empty. */
   fields: string[];
+}
+
+export interface CsvRequirement {
+  path: string;
+  kind: 'csv';
+  /** Header columns that must be present. The file must also hold at least one data row. */
+  columns: string[];
 }
 
 export type ContractResult = { ok: true; gaps?: undefined } | { ok: false; gaps: string[] };
@@ -51,9 +58,29 @@ async function inspect(dir: string, requirement: FileRequirement): Promise<strin
 
   if (contents.trim() === '') return [gap('file is empty')];
 
-  return requirement.kind === 'markdown'
-    ? missingHeadings(contents, requirement.headings).map((heading) => gap(`missing heading "${heading}"`))
-    : missingFields(contents, requirement.fields, gap);
+  switch (requirement.kind) {
+    case 'markdown':
+      return missingHeadings(contents, requirement.headings).map((heading) => gap(`missing heading "${heading}"`));
+    case 'json':
+      return missingFields(contents, requirement.fields, gap);
+    case 'csv':
+      return csvGaps(contents, requirement.columns, gap);
+  }
+}
+
+/**
+ * Header and row count only. Parsing quoted cells properly is not worth it here: the
+ * report is what humans review, and the CSV just has to be usable in a spreadsheet.
+ */
+function csvGaps(contents: string, required: string[], gap: (message: string) => string): string[] {
+  const lines = contents.split(/\r?\n/).filter((line) => line.trim() !== '');
+  const header = (lines[0] ?? '').split(',').map((cell) => cell.trim().replace(/^"|"$/g, '').toLowerCase());
+  const gaps = required
+    .filter((column) => !header.includes(column.toLowerCase()))
+    .map((column) => gap(`missing column "${column}"`));
+
+  if (lines.length < 2) gaps.push(gap('no rows below the header'));
+  return gaps;
 }
 
 function missingHeadings(contents: string, required: string[]): string[] {

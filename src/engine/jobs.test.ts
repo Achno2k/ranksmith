@@ -279,6 +279,76 @@ describe('a failed phase', () => {
   });
 });
 
+describe('a marketing scan', () => {
+  const startScan = (store: JobStore, focus: string | null = null) =>
+    store.createJob({
+      profile: 'connectmachine',
+      jobPrefix: 'CM',
+      kind: 'marketing',
+      topic: focus,
+      slackChannel: 'C123',
+      attachments: [],
+    });
+
+  it('begins scanning and remembers its kind', () => {
+    const job = startScan(openStore(), 'SaaStr Annual 2026');
+
+    assert.equal(job.kind, 'marketing');
+    assert.equal(job.state, 'marketing_scanning');
+    assert.equal(job.topic, 'SaaStr Annual 2026');
+  });
+
+  it('defaults to a seo job so existing callers are unchanged', () => {
+    assert.equal(startJob(openStore()).kind, 'seo');
+  });
+
+  it('shares the job counter with seo jobs', () => {
+    const store = openStore();
+
+    assert.equal(startJob(store).id, 'CM-001');
+    assert.equal(startScan(store).id, 'CM-002');
+  });
+
+  it('waits at its gate and closes when approved', () => {
+    const store = openStore();
+    const job = startScan(store);
+
+    assert.equal(store.phaseCompleted(job.id).state, 'marketing_review');
+    assert.equal(store.approve(job.id, 'U1').state, 'done');
+    assert.deepEqual(store.liveJobs(), []);
+  });
+
+  it('goes back for a revision on feedback and returns to the same gate', () => {
+    const store = openStore();
+    const job = startScan(store);
+    store.phaseCompleted(job.id);
+
+    assert.equal(store.recordFeedback(job.id, 'U1', 'more on partnerships')?.state, 'marketing_revising');
+    assert.equal(store.pendingFeedback(job.id), 'more on partnerships');
+    assert.equal(store.phaseCompleted(job.id).state, 'marketing_review');
+  });
+
+  it('can be rejected or stopped like any other job', () => {
+    const store = openStore();
+    const rejected = startScan(store);
+    store.phaseCompleted(rejected.id);
+    assert.equal(store.reject(rejected.id, 'U1').state, 'rejected');
+
+    const stopped = startScan(store);
+    assert.equal(store.cancel(stopped.id, 'U1')?.state, 'rejected');
+  });
+
+  it('has nothing to revert once done', () => {
+    const store = openStore();
+    const job = startScan(store);
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+
+    assert.equal(store.requestRevert(job.id, 'U1', 'undo'), null);
+    assert.equal(store.getJob(job.id)?.state, 'done');
+  });
+});
+
 describe('reverting a finished job', () => {
   const finished = (store: JobStore) => {
     const job = startJob(store);

@@ -16,14 +16,14 @@ import {
 import { buildRun } from './invocation.ts';
 import type { AttachmentInput, Job, JobStore } from './jobs.ts';
 import { attachmentsDir, logPath, reviewDocPath, workspaceAttachmentsDir, workspacePath } from './paths.ts';
-import { researchPath } from './phases.ts';
+import { marketingCsvPath, marketingPath, researchPath } from './phases.ts';
 import { startPreview, type Preview } from './preview.ts';
-import { baseRef, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
-import { afterFeedback, isGate } from './states.ts';
+import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
+import { afterFeedback, isGate, type JobKind } from './states.ts';
 import { RunQueue } from './queue.ts';
 import { classifyRun, MAX_ATTEMPTS } from './retry.ts';
 import { runTriage, type Triage } from './triage.ts';
-import { branchFor, createWorkspace, removeWorkspace } from './workspace.ts';
+import { branchFor, createScratchWorkspace, createWorkspace, removeWorkspace } from './workspace.ts';
 
 /** Refreshes the in-place running status without flooding a Slack thread. */
 const STATUS_HEARTBEAT_MS = 60_000;
@@ -33,6 +33,8 @@ export interface Notifier {
   jobStarted(job: Job): Promise<string>;
   researchReady(job: Job, result: Record<string, unknown>, documentPath: string): Promise<void>;
   contentReady(job: Job, prUrl: string): Promise<void>;
+  /** A marketing scan is at its Gate: the report and the targets CSV are ready to read. */
+  marketingReady(job: Job, result: Record<string, unknown>, reportPath: string, csvPath: string): Promise<void>;
   working(job: Job, note: string): Promise<void>;
   merging(job: Job, prUrl: string): Promise<void>;
   failed(job: Job, reason: string): Promise<void>;
@@ -73,11 +75,13 @@ export class Engine {
     channel: string,
     existingThreadTs: string | null = null,
     attachments: AttachmentInput[] = [],
+    kind: JobKind = 'seo',
   ): Promise<Job> {
     const attachmentMeta = attachments.map(({ name, mimetype }) => ({ name, mimetype }));
     const created = this.#jobs.createJob({
       profile: this.#profile.id,
       jobPrefix: this.#profile.jobPrefix,
+      kind,
       topic,
       slackChannel: channel,
       attachments: attachmentMeta,
@@ -98,7 +102,12 @@ export class Engine {
   }
 
   async approve(jobId: string, actor: string): Promise<void> {
-    this.#jobs.approve(jobId, actor);
+    const job = this.#jobs.approve(jobId, actor);
+
+    // A marketing scan closes on approval: no Phase is left to run, only the scratch
+    // directory to remove. The report copies under research/ stay for reading.
+    if (job.state === 'done') return this.#teardown(job);
+
     this.#enqueue(jobId);
   }
 
@@ -295,13 +304,24 @@ export class Engine {
     const result = await readResult(workspace);
     if (this.#isStopped(job.id)) return;
 
+    if (isMarketingPhase(phase)) {
+      // Nothing to commit: a marketing scan leaves a report, not a change to the site.
+      const [reportPath, csvPath] = await Promise.all([
+        this.#copyForReview(job, workspace, marketingPath(job.date), 'opportunities.md'),
+        this.#copyForReview(job, workspace, marketingCsvPath(job.date), 'targets.csv'),
+      ]);
+      if (this.#isStopped(job.id)) return;
+      const advanced = this.#jobs.phaseCompleted(job.id);
+      return this.#notify.marketingReady(advanced, result, reportPath, csvPath);
+    }
+
     if (phase === 'research' || phase === 'research_revision') {
       this.#jobs.update(job.id, { slug: String(result['slug'] ?? '') });
       // The skill tells agents to commit their own work, so there is often nothing left.
       if (await hasChanges(workspace)) {
         await commitAll(workspace, `docs(seo): research for ${job.id}`);
       }
-      const documentPath = await this.#copyForReview(job, workspace);
+      const documentPath = await this.#copyForReview(job, workspace, researchPath(job.date), 'research.md');
       if (this.#isStopped(job.id)) return;
       const advanced = this.#jobs.phaseCompleted(job.id);
       return this.#notify.researchReady(advanced, result, documentPath);
@@ -315,11 +335,11 @@ export class Engine {
     this.#enqueue(job.id);
   }
 
-  /** Mirrors the research into this repo so it can be read without opening the worktree. */
-  async #copyForReview(job: Job, workspace: string): Promise<string> {
-    const destination = reviewDocPath(job.id, job.date);
+  /** Mirrors a report into this repo so it can be read without opening the Workspace. */
+  async #copyForReview(job: Job, workspace: string, source: string, name: string): Promise<string> {
+    const destination = reviewDocPath(job.id, job.date, name);
     await mkdir(dirname(destination), { recursive: true });
-    await copyFile(join(workspace, researchPath(job.date)), destination);
+    await copyFile(join(workspace, source), destination);
     return destination;
   }
 
@@ -444,14 +464,22 @@ export class Engine {
 
   /** Facts gathered the same way every time, so triage answers from GitHub rather than memory. */
   async #describeForTriage(job: Job): Promise<string[]> {
-    const lines = [
-      `Job: ${job.id}, state \`${job.state}\``,
-      `Topic: ${job.topic ?? 'none (discovery mode)'}`,
-      `Slug: ${job.slug ?? 'not chosen yet'}`,
-      `Research document: docs/seo-content/${job.date}-research.md`,
-      `Preview: ${job.previewUrl ?? 'none'} (previews stop once review ends)`,
-      `Base branch: ${baseRef(this.#profile)}. Merging into it deploys to staging; production needs a human-created tag.`,
-    ];
+    const lines =
+      job.kind === 'marketing'
+        ? [
+            `Job: ${job.id}, a marketing scan, state \`${job.state}\``,
+            `Focus: ${job.topic ?? 'none (full scan across every lane)'}`,
+            `Report: ${marketingPath(job.date)}. Targets: ${marketingCsvPath(job.date)}.`,
+            'This Job never ships anything: approving it only closes it, and there is nothing to revert.',
+          ]
+        : [
+            `Job: ${job.id}, state \`${job.state}\``,
+            `Topic: ${job.topic ?? 'none (discovery mode)'}`,
+            `Slug: ${job.slug ?? 'not chosen yet'}`,
+            `Research document: docs/seo-content/${job.date}-research.md`,
+            `Preview: ${job.previewUrl ?? 'none'} (previews stop once review ends)`,
+            `Base branch: ${baseRef(this.#profile)}. Merging into it deploys to staging; production needs a human-created tag.`,
+          ];
 
     const pullRequests = [
       ['Pull request', job.pullRequest],
@@ -485,6 +513,16 @@ export class Engine {
 
   async #ensureWorkspace(job: Job): Promise<string> {
     if (job.branch) return workspacePath(job.id);
+
+    // A marketing scan has no branch to remember, so an existing directory is its marker:
+    // a revision must keep the report the first pass wrote.
+    if (job.kind === 'marketing') {
+      const existing = workspacePath(job.id);
+      return access(existing).then(
+        () => existing,
+        () => createScratchWorkspace(job.id),
+      );
+    }
 
     await this.#notify.working(job, 'Preparing a fresh worktree and installing dependencies.');
     const branch = branchFor(this.#profile, job.id, job.slug ?? '');

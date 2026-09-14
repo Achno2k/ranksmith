@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { KnownBlock } from '@slack/types';
 import type { Job } from '../engine/jobs.ts';
-import { isStopCommand, parseGateValue, promptFromMention, threadForMention } from './app.ts';
+import { isStopCommand, kindFromMention, parseGateValue, promptFromMention, threadForMention } from './app.ts';
 import { contentReady, decided, gateValue } from './messages.ts';
 
 describe('gate buttons', () => {
@@ -75,5 +75,31 @@ describe('parsing an app mention', () => {
 
   it('falls back to the first mention when Bolt has no bot user ID', () => {
     assert.equal(promptFromMention('<@URANKSMITH> find a topic', undefined), 'find a topic');
+  });
+});
+
+describe('choosing the kind of job a mention starts', () => {
+  it('starts a full marketing scan from the bare word', () => {
+    assert.deepEqual(kindFromMention('marketing'), { kind: 'marketing', topic: null });
+    assert.deepEqual(kindFromMention('Marketing:'), { kind: 'marketing', topic: null });
+  });
+
+  it('keeps the rest of the message as the focus', () => {
+    assert.deepEqual(kindFromMention('marketing SaaStr Annual 2026'), {
+      kind: 'marketing',
+      topic: 'SaaStr Annual 2026',
+    });
+    assert.deepEqual(kindFromMention('marketing: partnerships with CRMs'), {
+      kind: 'marketing',
+      topic: 'partnerships with CRMs',
+    });
+  });
+
+  it('leaves a seo topic that merely mentions marketing alone', () => {
+    assert.deepEqual(kindFromMention('research event marketing tools'), {
+      kind: 'seo',
+      topic: 'research event marketing tools',
+    });
+    assert.deepEqual(kindFromMention('marketingplan for Q4'), { kind: 'seo', topic: 'marketingplan for Q4' });
   });
 });

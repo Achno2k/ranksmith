@@ -16,9 +16,23 @@ Site Profile.
 
 ## Job
 
-One end-to-end attempt to ship SEO content for a Site Profile, from kickoff to merge
-or rejection. A Job owns exactly one branch and one Workspace. Jobs are the unit
-humans refer to in Slack.
+One end-to-end attempt at a piece of work for a Site Profile, from kickoff to its
+terminal state. A Job owns exactly one Workspace, and a seo Job also owns one branch.
+Jobs are the unit humans refer to in Slack.
+
+## Job Kind
+
+What a Job is for. A `seo` Job ships content through a pull request. A `marketing` Job
+ends at a reviewed report and never touches the site. The kind is fixed at kickoff and
+decides which states the Job can be in.
+
+## Marketing Scan
+
+A `marketing` Job. The agent acts as the site's head of growth: it works through lanes
+(events, communities, partnerships, media, review sites, competitor gaps, PR, content
+tie-ins), ranks the opportunities it finds across all of them, and hands back a report,
+a CSV of targets, and drafts. It reads the web and the site checkout, and writes only its
+own report. Approval closes it; there is nothing to merge or revert.
 
 ## Phase
 
@@ -59,8 +73,9 @@ failing the Contract is a failure however confident the agent sounded.
 
 ## Workspace
 
-The isolated git worktree a Job's agents work inside, created from `upstream/main`
-and destroyed when the Job ends. Never the human's own checkout.
+The isolated directory a Job's agents work inside, destroyed when the Job ends. For a
+seo Job it is a git worktree cut from `upstream/main`; for a Marketing Scan it is a
+plain scratch directory. Never the human's own checkout.
 
 ## Preview
 

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Engine, Notifier } from '../engine/engine.ts';
 import type { AttachmentInput, Job, JobStore } from '../engine/jobs.ts';
-import { isGate } from '../engine/states.ts';
+import { isGate, type JobKind } from '../engine/states.ts';
 import { downloadAttachments, type SlackFile } from './attachments.ts';
 import * as messages from './messages.ts';
 
@@ -32,6 +32,18 @@ export function promptFromMention(text: string, botUserId: string | undefined): 
 
 /** Deliberately exact so a content request containing the word "stop" is not cancelled. */
 export const isStopCommand = (prompt: string): boolean => /^stop[.!]?$/i.test(prompt.trim());
+
+/**
+ * A mention whose first word is "marketing" starts a marketing scan; the rest is its focus.
+ * Only the first word counts, so an SEO topic that mentions marketing stays an SEO job.
+ */
+export function kindFromMention(prompt: string): { kind: JobKind; topic: string | null } {
+  const match = /^marketing\b[:\s]*(.*)$/is.exec(prompt.trim());
+  if (!match) return { kind: 'seo', topic: prompt.trim() || null };
+
+  const focus = (match[1] ?? '').trim();
+  return { kind: 'marketing', topic: focus === '' ? null : focus };
+}
 
 export const threadForMention = (event: { ts: string; thread_ts?: string }): string =>
   event.thread_ts ?? event.ts;
@@ -164,6 +176,33 @@ export function createNotifier(app: SlackApp): Notifier {
       await finishStatus(job, 'Content and preview complete — waiting for review.');
       await post(job, messages.contentReady(job, prUrl));
     },
+    marketingReady: async (job, result, reportPath, csvPath) => {
+      await finishStatus(job, 'Marketing scan complete — waiting for review.');
+      if (!job.slackThreadTs) throw new Error(`${job.id} has no Slack thread for its marketing report`);
+
+      const uploads: [string, string, string][] = [
+        [reportPath, `${job.id}-${job.date}-opportunities.md`, `:page_facing_up: *${job.id} marketing report*`],
+        [csvPath, `${job.id}-${job.date}-targets.csv`, `:card_index: *${job.id} targets*`],
+      ];
+      const attached: string[] = [];
+      for (const [file, filename, initial_comment] of uploads) {
+        try {
+          await app.client.filesUploadV2({
+            channel_id: job.slackChannel,
+            thread_ts: job.slackThreadTs,
+            file,
+            filename,
+            title: filename,
+            initial_comment,
+          });
+          attached.push(filename);
+        } catch (error) {
+          // File delivery is useful but must never turn a finished scan into a failed Job.
+          console.error(`[${job.id}] could not upload ${filename} to Slack:`, error);
+        }
+      }
+      await post(job, messages.marketingReady(job, result, attached));
+    },
     working: setStatus,
     merging: async (job, prUrl) => {
       await finishStatus(job, 'Pipeline complete.');
@@ -232,23 +271,27 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
     }
   };
 
-  app.command('/seo', async ({ ack, command, respond }) => {
-    await ack();
-    const topic = command.text.trim();
+  const slashCommand = (name: string, kind: JobKind) =>
+    app.command(name, async ({ ack, command, respond }) => {
+      await ack();
+      const topic = command.text.trim();
 
-    if (!allowed(command.user_id)) {
-      await respond({ text: messages.notApprover, response_type: 'ephemeral' });
-      return;
-    }
+      if (!allowed(command.user_id)) {
+        await respond({ text: messages.notApprover, response_type: 'ephemeral' });
+        return;
+      }
 
-    const files = (command as { files?: SlackFile[] }).files;
-    const { attachments, cleanup } = await collectAttachments(files, config.botToken);
-    try {
-      await engine.startJob(topic === '' ? null : topic, command.channel_id, null, attachments);
-    } finally {
-      await cleanup();
-    }
-  });
+      const files = (command as { files?: SlackFile[] }).files;
+      const { attachments, cleanup } = await collectAttachments(files, config.botToken);
+      try {
+        await engine.startJob(topic === '' ? null : topic, command.channel_id, null, attachments, kind);
+      } finally {
+        await cleanup();
+      }
+    });
+
+  slashCommand('/seo', 'seo');
+  slashCommand('/marketing', 'marketing');
 
   app.event('app_mention', async ({ event, context, client }) => {
     if (!event.user) return;
@@ -313,7 +356,8 @@ export function registerHandlers(app: SlackApp, engine: Engine, jobs: JobStore, 
         return;
       }
 
-      await engine.startJob(prompt, event.channel, threadForMention(event), attachments);
+      const { kind, topic } = kindFromMention(prompt);
+      await engine.startJob(topic, event.channel, threadForMention(event), attachments, kind);
     } finally {
       await cleanup();
     }
