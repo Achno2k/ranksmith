@@ -1,5 +1,6 @@
 import { access, copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { killAgent, killRunningAgents, readResult, runPhase } from './agent.ts';
 import {
   closePullRequest,
@@ -21,7 +22,7 @@ import { startPreview, type Preview } from './preview.ts';
 import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { afterFeedback, isGate, type JobKind } from './states.ts';
 import { RunQueue } from './queue.ts';
-import { classifyRun, MAX_ATTEMPTS } from './retry.ts';
+import { classifyRun, isTransient, MAX_ATTEMPTS, TRANSIENT_RETRY_DELAY_MS } from './retry.ts';
 import { runTriage, type Triage } from './triage.ts';
 import { branchFor, createScratchWorkspace, createWorkspace, removeWorkspace } from './workspace.ts';
 
@@ -58,7 +59,11 @@ export class Engine {
     this.#jobs = jobs;
     this.#profile = profile;
     this.#notify = notify;
-    this.#queue = new RunQueue(async (task) => this.#advance(task.jobId));
+    this.#queue = new RunQueue(async (task) => {
+      // A retry waits inside its own turn, so nothing reads the queue as idle in between.
+      if (task.attempt > 1) await sleep(TRANSIENT_RETRY_DELAY_MS);
+      return this.#advance(task.jobId);
+    });
   }
 
   get depth(): number {
@@ -66,8 +71,11 @@ export class Engine {
   }
 
   /** Resolves when no Phase is running or queued. */
-  whenIdle(): Promise<void> {
-    return this.#queue.whenIdle();
+  async whenIdle(): Promise<void> {
+    // A failed step can queue its retry just after the queue drained, so check again.
+    do {
+      await this.#queue.whenIdle();
+    } while (this.#queue.depth > 0);
   }
 
   async startJob(
@@ -139,11 +147,14 @@ export class Engine {
     return true;
   }
 
-  /** Sends a failed Job back to the step it died on and runs it again. */
-  async retry(jobId: string): Promise<void> {
-    const job = this.#jobs.retryFailed(jobId);
+  /** Sends a failed Job back to the step it died on and runs it again. False if it has not failed. */
+  async retry(jobId: string, actor = 'cli'): Promise<boolean> {
+    if (this.#jobs.getJob(jobId)?.state !== 'failed') return false;
+
+    const job = this.#jobs.retryFailed(jobId, actor);
     await this.#notify.working(job, `Retrying from ${job.state}.`);
     this.#enqueue(jobId);
+    return true;
   }
 
   /**
@@ -214,14 +225,24 @@ export class Engine {
     return true;
   }
 
-  #enqueue(jobId: string): void {
+  #enqueue(jobId: string, attempt = 1): void {
     const job = this.#jobs.getJob(jobId);
     if (!job) return;
 
     const run = this.#queue
-      .enqueue({ jobId, phase: job.state, attempt: 1 })
+      .enqueue({ jobId, phase: job.state, attempt })
       .then(async (result) => {
-        if (!result.ok && !this.#isStopped(jobId)) await this.#fail(jobId, String(result.error));
+        if (result.ok || this.#isStopped(jobId)) return;
+
+        // One more go for a network or GitHub hiccup. Queued before anything is awaited, so a
+        // CLI waiting for idle sees the retry.
+        if (attempt === 1 && isTransient(result.error)) {
+          this.#enqueue(jobId, 2);
+          const seconds = TRANSIENT_RETRY_DELAY_MS / 1000;
+          return this.#notify.working(job, `Temporary error in ${job.state}; retrying in ${seconds}s.`);
+        }
+
+        await this.#fail(jobId, String(result.error));
       })
       // Reporting a failure can itself fail — a Slack outage is exactly when it would.
       // Log it rather than let an unhandled rejection take the whole Engine down.

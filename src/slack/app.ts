@@ -33,6 +33,9 @@ export function promptFromMention(text: string, botUserId: string | undefined): 
 /** Deliberately exact so a content request containing the word "stop" is not cancelled. */
 export const isStopCommand = (prompt: string): boolean => /^stop[.!]?$/i.test(prompt.trim());
 
+/** Exact for the same reason as stop: "retry the research with more competitors" is feedback. */
+export const isRetryCommand = (prompt: string): boolean => /^retry[.!]?$/i.test(prompt.trim());
+
 /**
  * A mention whose first word is "marketing" starts a marketing scan; the rest is its focus.
  * Only the first word counts, so an SEO topic that mentions marketing stays an SEO job.
@@ -454,6 +457,19 @@ export function registerHandlers(
         });
       } else if (!(await engine.stop(threadJob.id, event.user))) {
         await reply(messages.stopNotActive(threadJob));
+      }
+      return;
+    }
+
+    if (isRetryCommand(prompt)) {
+      if (!threadJob) {
+        await client.chat.postEphemeral({
+          channel: event.channel,
+          user: event.user,
+          text: messages.retryInJobThread,
+        });
+      } else if (!(await engine.retry(threadJob.id, event.user))) {
+        await reply(messages.retryNotFailed(threadJob));
       }
       return;
     }

@@ -142,7 +142,8 @@ try {
     }
 
     case 'retry': {
-      await engine.retry(requireId());
+      const id = requireId();
+      if (!(await engine.retry(id))) throw new Error(`${id} has not failed; it is ${jobs.getJob(id)?.state}.`);
       await engine.whenIdle();
       break;
     }

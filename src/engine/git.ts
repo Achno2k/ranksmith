@@ -80,28 +80,31 @@ export async function openPullRequest(
 }
 
 /**
- * `gh pr view` refuses to work with `--repo` and no explicit selector, so the head ref is
- * always passed explicitly.
+ * `gh pr list --head` matches the bare branch name only. An `owner:branch` ref matches
+ * nothing, which sent every content revision to open a second pull request and fail. The
+ * owner is checked here instead, so a same-named branch on another fork is never ours.
  */
 export async function findPullRequest(profile: SiteProfile, head: string): Promise<number | null> {
+  const separator = head.indexOf(':');
+  const owner = separator === -1 ? null : head.slice(0, separator);
+  const branch = head.slice(separator + 1);
+
   const { exitCode, stdout } = await tryRun('gh', [
     'pr',
     'list',
     '--repo',
     profile.repo.pullRequestRepo,
     '--head',
-    head,
+    branch,
     '--state',
     'open',
     '--json',
-    'number',
-    '--jq',
-    '.[0].number // empty',
+    'number,headRepositoryOwner',
   ]);
-
   if (exitCode !== 0) return null;
-  const number = Number(stdout.trim());
-  return Number.isInteger(number) && number > 0 ? number : null;
+
+  const pulls = JSON.parse(stdout) as { number: number; headRepositoryOwner: { login: string } | null }[];
+  return pulls.find((pull) => owner === null || pull.headRepositoryOwner?.login === owner)?.number ?? null;
 }
 
 /**

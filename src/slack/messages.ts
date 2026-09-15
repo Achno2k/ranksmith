@@ -142,7 +142,7 @@ export const rejected = (job: Job) => ({ text: `${job.id} rejected. Worktree rem
 export const stopped = (job: Job) => ({ text: `${job.id} stopped. Worktree removed.` });
 
 export const failed = (job: Job, reason: string) => ({
-  text: `${job.id} failed.\n\`\`\`${reason}\`\`\`\nWorktree kept for inspection.`,
+  text: `${job.id} failed.\n\`\`\`${reason}\`\`\`\nWorktree kept for inspection. Mention \`@RankSmith retry\` in this thread to run it again from the step that failed.`,
 });
 
 export const notApprover = 'You are not an approver for RankSmith jobs.';
@@ -156,6 +156,10 @@ export const feedbackNotReady = (job: Job) =>
 export const stopInJobThread = 'Use `@RankSmith stop` inside the RankSmith Job thread you want to stop.';
 
 export const stopNotActive = (job: Job) => `${job.id} is already \`${job.state}\`; there is nothing to stop.`;
+
+export const retryInJobThread = 'Use `@RankSmith retry` inside the failed Job thread you want to run again.';
+
+export const retryNotFailed = (job: Job) => `${job.id} is \`${job.state}\`; only a failed Job can be retried.`;
 
 export function revertReady(job: Job, prUrl: string) {
   const lines = [

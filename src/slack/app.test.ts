@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { KnownBlock } from '@slack/types';
 import type { Job } from '../engine/jobs.ts';
-import { isStopCommand, kindFromMention, parseGateValue, promptFromMention, threadForMention } from './app.ts';
+import {
+  isRetryCommand,
+  isStopCommand,
+  kindFromMention,
+  parseGateValue,
+  promptFromMention,
+  threadForMention,
+} from './app.ts';
 import { contentReady, decided, gateValue, statusLines, workingStatus } from './messages.ts';
 
 describe('native Slack status', () => {
@@ -70,6 +77,17 @@ describe('recognizing an explicit stop command', () => {
   it('does not cancel ordinary content requests that happen to contain stop', () => {
     assert.equal(isStopCommand('research when users stop following up'), false);
     assert.equal(isStopCommand('stop comparing NFC cards and software'), false);
+  });
+});
+
+describe('recognizing an explicit retry command', () => {
+  it('accepts retry by itself regardless of case or trailing punctuation', () => {
+    assert.equal(isRetryCommand('retry'), true);
+    assert.equal(isRetryCommand(' Retry! '), true);
+  });
+
+  it('leaves a request that mentions retrying to triage as feedback', () => {
+    assert.equal(isRetryCommand('retry the research with more competitors'), false);
   });
 });
 

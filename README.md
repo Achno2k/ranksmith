@@ -24,6 +24,11 @@ Mention `@RankSmith` in the Job thread when giving feedback; unmentioned replies
 Use `@RankSmith stop` in that thread to stop an active Job. Only a human moves a job
 through a gate.
 
+A failed Job keeps its worktree. `@RankSmith retry` in its thread runs it again from the step
+that failed. The Engine's own steps (push, pull request, preview) also retry once on their
+own, 30 seconds later, when the error looks temporary: network, GitHub 5xx, rate limits, or a
+tunnel that did not come up. Anything else fails straight away.
+
 Every other mention in a Job thread goes through a quick read-only Claude call
 (`claude-sonnet-5`) that decides whether it is a question, feedback, a revert, or a stop.
 Questions ("is this on staging?") get an answer in the thread, checked against the pull

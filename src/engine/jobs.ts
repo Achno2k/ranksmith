@@ -275,7 +275,7 @@ export class JobStore {
    * Sends a failed Job back to the step it died on. Research and content that already
    * passed their Contracts are expensive; a failure in between should not discard them.
    */
-  retryFailed(id: string): Job {
+  retryFailed(id: string, actor = 'system'): Job {
     const job = this.#require(id);
     if (job.state !== 'failed') {
       throw new Error(`${id} has not failed; it is at ${job.state}`);
@@ -286,7 +286,7 @@ export class JobStore {
     };
     if (!target.failed_from) throw new Error(`${id} does not record where it failed`);
 
-    this.#record(id, 'retried', 'system', target.failed_from);
+    this.#record(id, 'retried', actor, target.failed_from);
     return this.#setState(id, target.failed_from as JobState);
   }
 
