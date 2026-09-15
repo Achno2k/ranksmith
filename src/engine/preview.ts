@@ -3,7 +3,15 @@ import { createServer } from 'node:net';
 import { run, words } from './exec.ts';
 import type { SiteProfile } from './profile.ts';
 
-const TUNNEL_URL = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+/**
+ * The public hostname of a quick tunnel. `api.trycloudflare.com` is excluded: cloudflared
+ * names it in the error it prints when the tunnel request itself fails, and matching that
+ * once sent reviewers a URL that answers 405 to everything.
+ */
+export const TUNNEL_URL = /https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com/;
+
+/** Printed instead of a hostname when Cloudflare refused or dropped the tunnel request. */
+export const TUNNEL_FAILED = /failed to request quick Tunnel/i;
 const TUNNEL_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 15 * 60_000;
 
@@ -110,7 +118,10 @@ function firstMatch(child: ChildProcess, pattern: RegExp, timeoutMs: number): Pr
     const onData = (chunk: Buffer) => {
       seen += chunk.toString();
       const match = seen.match(pattern);
-      if (match) settle(() => resolve(match[0]));
+      if (match) return settle(() => resolve(match[0]));
+      // Fail now rather than at the timeout: the message is what makes the retry transient.
+      const failed = seen.match(TUNNEL_FAILED);
+      if (failed) settle(() => reject(new Error(`cloudflared exited early: ${seen.slice(failed.index).split('\n')[0]}`)));
     };
 
     const onClose = (code: number | null) =>

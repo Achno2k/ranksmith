@@ -4,6 +4,11 @@ export interface RunOutcome {
   timedOut: boolean;
   /** Contract gaps found in the Workspace afterwards; empty means the Contract held. */
   gaps: string[];
+  /** Read from Claude Code's final stream-json event; absent for Codex and for crashes. */
+  sessionId?: string;
+  totalCostUsd?: number;
+  durationMs?: number;
+  numTurns?: number;
 }
 
 export type RunDecision =

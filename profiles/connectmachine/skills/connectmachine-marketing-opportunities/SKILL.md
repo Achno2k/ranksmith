@@ -25,7 +25,7 @@ description: Scan the market for ConnectMachine marketing opportunities across e
 - Read only. You never send, post, import, or write anywhere except your own scratch directory.
 - Public sources only. Never log in, never bypass a login wall, never scrape behind one.
 - Never invent metrics, quotes, citations, emails, handles, or product capabilities. Mark confidence on anything inferred.
-- Before searching, read and follow `../web-research/SKILL.md` completely. Use Playwright for pages that only render with JavaScript.
+- Before searching, load the `web-research` skill with the Skill tool and follow it. Use Playwright for pages that only render with JavaScript.
 
 ## Lanes
 
@@ -48,7 +48,7 @@ Drop anything that: has no source, needs a login to act on, targets people with 
 
 ## Targets
 
-- One CSV row per person or organisation worth acting on: `name, type, org, lane, channel, source_url, why_it_matters, next_action`.
+- One CSV row per person or organisation worth acting on: `name, type, org, lane, channel, source_url, why_it_matters, next_action`. Every row's `source_url` must start with `http://` or `https://`; the runner rejects the file otherwise. Quote any cell that contains a comma.
 - `type` is person, company, community, event, publication, or listing. `channel` is how to reach them (email, LinkedIn, X, form, marketplace, in person).
 - No emails unless published on the source page. Never guess a handle.
 - Dedupe. One row per target even when they appear in several lanes; list the lanes in `lane` separated by `;`.
@@ -65,7 +65,7 @@ Drop anything that: has no source, needs a login to act on, targets people with 
 - Write `docs/marketing/{date}-opportunities.md` and `docs/marketing/{date}-targets.csv`, where `{date}` is given in the task. On a revision, edit the same files.
 - Sections the runner checks for:
   - `## Summary` — the focus, what you scanned, the three things to do this week.
-  - `## Ranked Opportunities` — the top 10 as a table: rank, opportunity, lane, target, score, effort, next action, evidence URL. Then "also seen" as a short list.
+  - `## Ranked Opportunities` — the top 10 as a table (the runner checks for at least one table row): rank, opportunity, lane, target, score, effort, next action, evidence URL. Then "also seen" as a short list.
   - `## Targets` — count by lane and a pointer to the CSV. Call out the five most valuable names.
   - `## Drafts` — the drafts, each labelled with the opportunity it serves.
   - `## Handoffs` — `/seo` topics for the content pipeline, one line each. "None" is acceptable.
@@ -74,6 +74,8 @@ Drop anything that: has no source, needs a login to act on, targets people with 
 ## Required output
 
 Write `.ranksmith/result.json` before you finish. The runner reads this file and ignores anything you say about how the run went.
+
+The task gives you a check command (`ranksmith-check <phase> <date>`). Run it from the workspace root before you finish and fix everything it reports; it is the same check the runner applies afterwards. `top_opportunities` must be a non-empty array.
 
 ```json
 {

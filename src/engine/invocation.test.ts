@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildRun } from './invocation.ts';
+import { buildRun, CHECK_COMMAND } from './invocation.ts';
 import type { SiteProfile } from './profile.ts';
 
 const PROFILE: SiteProfile = {
@@ -88,10 +88,86 @@ describe('building an agent run', () => {
     assert.equal(run.cwd, '/work/CM-001');
     assert.deepEqual(run.args.slice(0, 5), ['-p', '--model', 'claude-opus-5', '--permission-mode', 'acceptEdits']);
     assert.equal(run.args[5], '--allowedTools');
-    for (const tool of ['WebSearch', 'WebFetch', 'Bash(git commit *)', 'Bash(npm run build *)']) {
-      assert.ok(run.args[6]?.split(',').includes(tool), `missing ${tool}`);
+    const tools = run.args[6]?.split(',') ?? [];
+    for (const tool of ['WebSearch', 'WebFetch', 'Bash(git commit:*)', 'Bash(npm run check:*)']) {
+      assert.ok(tools.includes(tool), `missing ${tool}`);
     }
     assert.equal(run.timeoutMs, 2_400_000);
+  });
+
+  it('uses the prefix form for every Bash rule and leaves the build to the preview step', () => {
+    const run = buildRun({ ...base, phase: 'content' });
+    const tools = run.args[run.args.indexOf('--allowedTools') + 1]?.split(',') ?? [];
+    const bash = tools.filter((tool) => tool.startsWith('Bash('));
+
+    assert.ok(bash.length > 0);
+    for (const rule of bash) assert.match(rule, /^Bash\([^)]+:\*\)$/, `${rule} is not prefix form`);
+    assert.ok(!tools.some((tool) => /npm run (build|parity)/.test(tool)), 'build and parity run in the preview step');
+  });
+
+  it('asks Claude for one JSON event per line so the log keeps tool calls', () => {
+    const run = buildRun({ ...base, phase: 'content' });
+
+    assert.deepEqual(run.args.slice(7, 10), ['--output-format', 'stream-json', '--verbose']);
+    assert.ok(!buildRun({ ...base, phase: 'research' }).args.includes('--output-format'), 'codex is unchanged');
+  });
+
+  it('installs the budget hook and tells the agent how to check its own work', () => {
+    const run = buildRun({ ...base, phase: 'content' });
+    const settings = JSON.parse(run.args[run.args.indexOf('--settings') + 1] ?? '{}') as {
+      hooks: { PreToolUse: { matcher: string; hooks: { type: string; command: string }[] }[] };
+    };
+
+    assert.equal(settings.hooks.PreToolUse[0]?.matcher, 'WebSearch|WebFetch');
+    assert.match(settings.hooks.PreToolUse[0]?.hooks[0]?.command ?? '', /^node .*\/bin\/ranksmith-budget$/);
+    assert.ok(run.prompt.includes(`\`${CHECK_COMMAND} content 2026-08-14\``));
+    const tools = run.args[run.args.indexOf('--allowedTools') + 1]?.split(',') ?? [];
+    assert.ok(tools.includes(`Bash(${CHECK_COMMAND}:*)`), 'the self-check must be runnable');
+  });
+
+  it('gives research Ahrefs and every phase the skills directory, nothing else new', () => {
+    const research = { backend: 'claude', model: 'claude-opus-5', timeoutMs: 1_500_000, skill: 'connectmachine-seo-content' } as const;
+    const tools = (phase: 'research' | 'content' | 'marketing') => {
+      const run = buildRun({ ...base, phase, profile: { ...PROFILE, phases: { ...PROFILE.phases, research } } });
+      return run.args[run.args.indexOf('--allowedTools') + 1]?.split(',') ?? [];
+    };
+
+    assert.ok(tools('research').includes('mcp__claude_ai_Ahrefs'));
+    assert.ok(!tools('content').includes('mcp__claude_ai_Ahrefs'));
+    assert.ok(!tools('marketing').includes('mcp__claude_ai_Ahrefs'));
+    for (const phase of ['research', 'content', 'marketing'] as const) {
+      assert.ok(tools(phase).some((tool) => /^Read\(\/\/.*\/\.claude\/skills\/\*\*\)$/.test(tool)), `${phase} cannot read skills`);
+    }
+  });
+
+  it('spells out every contract rule in the prompt', () => {
+    const research = buildRun({ ...base, phase: 'research' }).prompt;
+    assert.match(research, /must contain a markdown table: Ranked Opportunities/);
+    assert.match(research, /non-empty arrays: why/);
+    assert.match(research, /slug must match \^/);
+
+    const marketing = buildRun({ ...base, phase: 'marketing' }).prompt;
+    assert.match(marketing, /every row must hold a value starting with http:\/\/ or https:\/\/ in: source_url/);
+    assert.match(marketing, /non-empty arrays: top_opportunities/);
+  });
+
+  it('resumes the same session only for a revision of the same phase', () => {
+    const resumed = buildRun({ ...base, phase: 'content_revision', feedback: 'tighten it', resumeSessionId: 'sess-1' });
+    assert.deepEqual(resumed.args.slice(-2), ['--resume', 'sess-1']);
+
+    // A first pass never continues another Phase: only Artifacts carry between Phases.
+    for (const phase of ['content', 'marketing'] as const) {
+      assert.ok(!buildRun({ ...base, phase, resumeSessionId: 'sess-1' }).args.includes('--resume'), phase);
+    }
+    assert.ok(!buildRun({ ...base, phase: 'content_revision', feedback: 'x' }).args.includes('--resume'));
+    assert.ok(!buildRun({ ...base, phase: 'content_revision', feedback: 'x', resumeSessionId: null }).args.includes('--resume'));
+  });
+
+  it('keeps the prompt the same whether or not a session is resumed', () => {
+    const fresh = buildRun({ ...base, phase: 'content_revision', feedback: 'tighten it' });
+    const resumed = buildRun({ ...base, phase: 'content_revision', feedback: 'tighten it', resumeSessionId: 'sess-1' });
+
+    assert.equal(fresh.prompt, resumed.prompt);
   });
 
   it('always names the skill, so an agent never runs bare', () => {
@@ -193,7 +269,8 @@ describe('building a marketing scan', () => {
     for (const tool of ['WebSearch', 'WebFetch', 'mcp__playwright', 'mcp__plugin_playwright_playwright']) {
       assert.ok(tools.includes(tool), `missing ${tool}`);
     }
-    assert.ok(!tools.some((tool) => tool.startsWith('Bash(')), 'a scan must not run shell commands');
+    const shell = tools.filter((tool) => tool.startsWith('Bash('));
+    assert.deepEqual(shell, [`Bash(${CHECK_COMMAND}:*)`], 'a scan may only run the self-check');
     assert.equal(run.timeoutMs, 1_800_000);
   });
 

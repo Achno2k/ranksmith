@@ -1,6 +1,27 @@
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { Attachment } from './jobs.ts';
 import { contractFor, marketingPath, researchPath } from './phases.ts';
 import { isMarketingPhase, type PhaseName, type SiteProfile } from './profile.ts';
+
+/** This checkout, so the agent's check command and the budget hook point at real files. */
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '');
+export const CHECK_COMMAND = `${REPO_ROOT}/bin/ranksmith-check`;
+const BUDGET_HOOK = `${REPO_ROOT}/bin/ranksmith-budget`;
+
+/** Skills are symlinked into ~/.claude/skills; a Read of one is outside the workspace cwd. */
+const SKILLS_READ = `Read(/${homedir()}/.claude/skills/**)`;
+
+/**
+ * The search budget as a hard stop. The prompt already states the numbers; this hook makes
+ * the call past the limit fail with a message instead of quietly going over. Harmless for a
+ * Phase with no budget file: the hook then allows everything.
+ */
+const BUDGET_SETTINGS = JSON.stringify({
+  hooks: {
+    PreToolUse: [{ matcher: 'WebSearch|WebFetch', hooks: [{ type: 'command', command: `node ${BUDGET_HOOK}` }] }],
+  },
+});
 
 export interface RunRequest {
   jobId: string;
@@ -15,6 +36,8 @@ export interface RunRequest {
   gaps: string[];
   /** Files the user attached to the original Slack message or feedback. */
   attachments: Attachment[];
+  /** The Claude session the Job's last Phase ran in. Only a revision picks it up. */
+  resumeSessionId?: string | null;
 }
 
 export interface AgentInvocation {
@@ -29,20 +52,39 @@ export interface AgentInvocation {
 /**
  * `claude -p` denies any tool that would need approval, and acceptEdits only covers file
  * edits. Without this list research has no web access and content cannot commit or run
- * the site's checks.
+ * the site's checks. Rules use Claude Code's `prefix:*` form. The build and parity checks
+ * are left out on purpose: the preview step runs them on the same worktree anyway.
  */
 const CLAUDE_ALLOWED_TOOLS = [
   'WebSearch',
   'WebFetch',
-  'Bash(git add *)',
-  'Bash(git commit *)',
-  'Bash(git status *)',
-  'Bash(git diff *)',
-  'Bash(git log *)',
-  'Bash(npm run check *)',
-  'Bash(npm run build *)',
-  'Bash(npm run parity *)',
+  'Bash(git add:*)',
+  'Bash(git commit:*)',
+  'Bash(git status:*)',
+  'Bash(git diff:*)',
+  'Bash(git log:*)',
+  'Bash(npm run check:*)',
+  `Bash(${CHECK_COMMAND}:*)`,
+  SKILLS_READ,
 ];
+
+/**
+ * The claude.ai Ahrefs connector, as `claude mcp list` names it. Until someone authenticates
+ * it once (`/mcp` in an interactive session) it is refused, and the skill tells the agent to
+ * say so in "Ahrefs Evidence" rather than invent numbers.
+ */
+const AHREFS_TOOLS = ['mcp__claude_ai_Ahrefs'];
+
+/**
+ * The only Phases that continue an earlier agent session: a revision of the same Phase.
+ * Nothing carries between different Phases except Artifacts (CONTEXT.md), so content never
+ * resumes research.
+ */
+const REVISION_PHASES: ReadonlySet<PhaseName> = new Set<PhaseName>([
+  'research_revision',
+  'content_revision',
+  'marketing_revision',
+]);
 
 /**
  * A marketing scan reads the web and the site, and writes only its own report. No git,
@@ -59,11 +101,21 @@ const marketingTools = (profile: SiteProfile): string[] => [
   'mcp__playwright',
   'mcp__plugin_playwright_playwright',
   `Read(/${profile.repo.path}/**)`,
+  `Bash(${CHECK_COMMAND}:*)`,
+  SKILLS_READ,
 ];
+
+const isResearch = (phase: PhaseName): boolean => phase === 'research' || phase === 'research_revision';
 
 export function buildRun(request: RunRequest): AgentInvocation {
   const config = request.profile.phases[request.phase];
   const marketing = isMarketingPhase(request.phase);
+  const resume = REVISION_PHASES.has(request.phase) ? (request.resumeSessionId ?? null) : null;
+  const tools = marketing
+    ? marketingTools(request.profile)
+    : isResearch(request.phase)
+      ? [...CLAUDE_ALLOWED_TOOLS, ...AHREFS_TOOLS]
+      : CLAUDE_ALLOWED_TOOLS;
 
   const args =
     config.backend === 'codex'
@@ -75,7 +127,14 @@ export function buildRun(request: RunRequest): AgentInvocation {
           '--permission-mode',
           'acceptEdits',
           '--allowedTools',
-          (marketing ? marketingTools(request.profile) : CLAUDE_ALLOWED_TOOLS).join(','),
+          tools.join(','),
+          // One JSON event per line, tool calls included; the plain text log hid them.
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          '--settings',
+          BUDGET_SETTINGS,
+          ...(resume ? ['--resume', resume] : []),
         ];
 
   return {
@@ -176,14 +235,31 @@ function budgets(request: RunRequest): string | null {
 }
 
 function required(phase: PhaseName, date: string): string {
+  // Spells out every rule the Contract checks, so the agent is never judged on a surprise.
   const lines = contractFor(phase, date).files.map((file) => {
     switch (file.kind) {
       case 'markdown':
-        return `- \`${file.path}\` with sections: ${file.headings.join(', ')}`;
-      case 'json':
-        return `- \`${file.path}\` containing the keys: ${file.fields.join(', ')}`;
+        return (
+          `- \`${file.path}\` with sections: ${file.headings.join(', ')}` +
+          (file.tables?.length ? `; these sections must contain a markdown table: ${file.tables.join(', ')}` : '')
+        );
+      case 'json': {
+        const patterns = Object.entries(file.patterns ?? {}).map(
+          ([field, pattern]) => `${field} must match ${typeof pattern === 'string' ? pattern : pattern.source}`,
+        );
+        return (
+          `- \`${file.path}\` containing the keys: ${file.fields.join(', ')}` +
+          (file.arrays?.length ? `; non-empty arrays: ${file.arrays.join(', ')}` : '') +
+          (patterns.length ? `; ${patterns.join(', ')}` : '')
+        );
+      }
       case 'csv':
-        return `- \`${file.path}\` with header columns: ${file.columns.join(', ')} and at least one row`;
+        return (
+          `- \`${file.path}\` with header columns: ${file.columns.join(', ')} and at least one row` +
+          (file.urlColumns?.length
+            ? `; every row must hold a value starting with http:// or https:// in: ${file.urlColumns.join(', ')}`
+            : '')
+        );
     }
   });
 
@@ -192,6 +268,8 @@ function required(phase: PhaseName, date: string): string {
     '',
     'Your work is judged only on these files. Anything missing is a failed run:',
     ...lines,
+    '',
+    `Before you finish, run \`${CHECK_COMMAND} ${phase} ${date}\` from the workspace root and fix everything it reports. It is the same check the runner applies afterwards.`,
   ].join('\n');
 }
 

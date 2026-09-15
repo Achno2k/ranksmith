@@ -19,6 +19,10 @@ export const databasePath = (): string => join(ranksmithHome(), 'ranksmith.db');
 
 export const workspacePath = (jobId: string): string => join(ranksmithHome(), 'work', jobId);
 
+/** One warm node_modules per lockfile, cloned into each new worktree instead of installed. */
+export const nodeModulesCachePath = (lockfileHash: string): string =>
+  join(ranksmithHome(), 'cache', `node_modules-${lockfileHash}`);
+
 export const jobDir = (jobId: string): string => join(ranksmithHome(), 'jobs', jobId);
 
 export const logPath = (jobId: string, phase: string, attempt: number): string =>

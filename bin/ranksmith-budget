@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+// Claude Code PreToolUse hook that turns the prompt's search budget into a hard stop.
+// The Engine writes <cwd>/.ranksmith/budget.json before a run; every matched tool call
+// bumps its counter here, and the call past the limit is refused with exit 2, which is
+// what makes Claude Code block the tool and hand the stderr line back to the agent.
+//
+// budget.json: { "limits": { "WebSearch": 30, "WebFetch": 10 }, "used": { "WebSearch": 3 } }
+// No file, or no limit for the tool: allow. Anything unreadable: allow, never wedge a run.
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+let chunks = '';
+for await (const chunk of process.stdin) chunks += chunk;
+
+let input;
+try {
+  input = JSON.parse(chunks);
+} catch {
+  process.exit(0);
+}
+
+const tool = typeof input.tool_name === 'string' ? input.tool_name : null;
+const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
+if (!tool) process.exit(0);
+
+const path = join(cwd, '.ranksmith', 'budget.json');
+
+let budget;
+try {
+  budget = JSON.parse(await readFile(path, 'utf8'));
+} catch {
+  process.exit(0);
+}
+if (budget === null || typeof budget !== 'object') process.exit(0);
+
+budget.used ??= {};
+budget.used[tool] = (budget.used[tool] ?? 0) + 1;
+await writeFile(path, `${JSON.stringify(budget, null, 2)}\n`);
+
+const limit = budget.limits?.[tool];
+if (typeof limit === 'number' && budget.used[tool] > limit) {
+  console.error(
+    `Budget exhausted: ${limit} of ${limit} ${tool} calls used. Stop searching and write the report with what you have.`,
+  );
+  process.exit(2);
+}

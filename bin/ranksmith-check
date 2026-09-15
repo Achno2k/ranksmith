@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+// Lets an agent judge its own work against its Phase Contract before it finishes. It is
+// the same check the Engine runs afterwards, so what passes here passes there.
+//
+// Usage, from the workspace root:  node <repo>/bin/ranksmith-check <phase> <date>
+import { validateContract } from '../src/engine/contract.ts';
+import { contractFor } from '../src/engine/phases.ts';
+import { AGENT_PHASES } from '../src/engine/profile.ts';
+
+const [phase, date] = process.argv.slice(2);
+
+if (!AGENT_PHASES.includes(phase) || !/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) {
+  console.error(`usage: ranksmith-check <${AGENT_PHASES.join('|')}> <YYYY-MM-DD>`);
+  process.exit(2);
+}
+
+const result = await validateContract(process.cwd(), contractFor(phase, date));
+
+if (result.ok) {
+  console.log('contract ok');
+  process.exit(0);
+}
+
+for (const gap of result.gaps) console.log(gap);
+process.exit(1);

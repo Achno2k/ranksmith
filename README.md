@@ -104,9 +104,16 @@ replaces it.
 npm start                              # run the Slack engine
 npm run job -- marketing [focus]       # marketing scan from the terminal
 npm run job -- status CM-002           # inspect a Job's persisted state
+npm run job -- sweep [days]            # reject Jobs parked at a gate longer than days (default 14)
 npm test                               # node:test across the tested seams
 npm run typecheck
+bin/ranksmith-check <phase> <date>      # from a workspace root: the Phase Contract check, one gap per line
 ```
+
+`bin/ranksmith-check` is the same check the Engine runs after a Phase, so an agent runs it
+before finishing. `bin/ranksmith-budget` is a Claude Code PreToolUse hook that counts
+WebSearch and WebFetch calls in `<workspace>/.ranksmith/budget.json` and blocks the call
+past the limit.
 
 While the pipeline runs, the Job thread shows Slack's native status ("RankSmith is working on
 CM-002…") with the current step and elapsed time rotating under it, re-sent every minute so
@@ -120,15 +127,29 @@ locally:
 tail -f ~/.ranksmith/jobs/CM-002/logs/research-1.log
 ```
 
-Replace `~/.ranksmith` with `RANKSMITH_HOME` when that variable is configured. A Phase
-may run for 25–40 minutes; a changing heartbeat means its process is still alive.
+Replace `~/.ranksmith` with `RANKSMITH_HOME` when that variable is configured. A Claude log is
+stream-json, one event per line, tool calls included; the final `result` event carries the
+session id, cost, and turn count. A Phase may run for 25–40 minutes; a changing heartbeat
+means its process is still alive.
+
+Only the agent process waits in the one-at-a-time queue. Worktree setup, `npm ci`, the preview
+build, and merges run beside it, so a build never holds up another Job's agent. The first seo
+Job on a given `package-lock.json` installs dependencies and keeps them at
+`~/.ranksmith/cache/node_modules-<sha256>`; later Jobs clone that directory into their
+worktree instead of installing again.
+
+A revision (`research_revision`, `content_revision`, `marketing_revision`) resumes the Claude
+session of the Phase it revises with `--resume`, so the agent keeps what it already read. A
+first pass never resumes anything: only Artifacts carry between Phases. If the session is gone,
+the revision runs once more from scratch.
 
 ## What is tested
 
 By agreement, tests cover the four seams where correctness is load-bearing:
 
 - the job state machine and its gates
-- phase contract validation and the retry policy
+- phase contract validation and the retry policy (headings, tables, JSON shapes, CSV rows and URLs)
+- the agent self-check command and the search budget hook, run as child processes
 - the run queue's one-agent-at-a-time guarantee
 - prompt and argv assembly
 

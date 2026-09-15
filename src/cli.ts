@@ -15,7 +15,10 @@ const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
   npm run job -- reject <id>       reject and clean up
   npm run job -- revert <id> [why] open a revert pull request for a done job
   npm run job -- status [id]       show live jobs, or one job's history
+  npm run job -- sweep [days]      reject jobs parked at a gate for longer than days (default 14)
 `;
+
+const DEFAULT_SWEEP_DAYS = 14;
 
 const stamp = () => new Date().toLocaleTimeString();
 const say = (line: string) => console.log(`${stamp()}  ${line}`);
@@ -158,6 +161,15 @@ try {
       const accepted = await engine.revert(id, 'cli', rest.slice(1).join(' ').trim() || null);
       if (!accepted) throw new Error(`${id} is not done; it is ${jobs.getJob(id)?.state}.`);
       await engine.whenIdle();
+      break;
+    }
+
+    case 'sweep': {
+      const days = rest[0] === undefined ? DEFAULT_SWEEP_DAYS : Number(rest[0]);
+      if (!Number.isFinite(days) || days < 0) throw new Error(`Not a number of days: ${rest[0]}`);
+
+      const swept = await engine.sweepStale(days);
+      say(swept.length === 0 ? `Nothing parked at a gate for more than ${days} days.` : `Swept ${swept.join(', ')}.`);
       break;
     }
 

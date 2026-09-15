@@ -37,6 +37,11 @@ export interface Job {
   attachments: Attachment[];
   /** The pull request that undoes this Job's merged work, once one is open. */
   revertPullRequest: number | null;
+  /**
+   * The Claude session of the last Phase that passed, so a revision can continue it.
+   * Optional only so hand-built Jobs in older tests still type; the store always sets it.
+   */
+  sessionId?: string | null;
 }
 
 export interface NewJob {
@@ -81,6 +86,7 @@ interface JobRow {
   preview_url: string | null;
   attachments: string;
   revert_pull_request: number | null;
+  session_id: string | null;
 }
 
 interface EventRow {
@@ -104,6 +110,7 @@ const toJob = (row: JobRow): Job => ({
   previewUrl: row.preview_url,
   attachments: parseAttachments(row.attachments),
   revertPullRequest: row.revert_pull_request ?? null,
+  sessionId: row.session_id ?? null,
 });
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -151,7 +158,8 @@ export class JobStore {
         failed_from TEXT,
         attachments TEXT NOT NULL DEFAULT '[]',
         revert_pull_request INTEGER,
-        kind TEXT NOT NULL DEFAULT 'seo'
+        kind TEXT NOT NULL DEFAULT 'seo',
+        session_id TEXT
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,6 +195,13 @@ export class JobStore {
     // Databases created before marketing Jobs existed are missing this column.
     try {
       this.#db.exec("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'seo'");
+    } catch {
+      // Already present.
+    }
+
+    // Databases created before session resume existed are missing this column.
+    try {
+      this.#db.exec('ALTER TABLE jobs ADD COLUMN session_id TEXT');
     } catch {
       // Already present.
     }
@@ -233,7 +248,12 @@ export class JobStore {
     return rows.map(toJob);
   }
 
-  update(id: string, fields: Partial<Pick<JobRow, 'slack_thread_ts' | 'slug' | 'branch' | 'pull_request' | 'preview_url' | 'revert_pull_request'>>): Job {
+  update(
+    id: string,
+    fields: Partial<
+      Pick<JobRow, 'slack_thread_ts' | 'slug' | 'branch' | 'pull_request' | 'preview_url' | 'revert_pull_request' | 'session_id'>
+    >,
+  ): Job {
     const entries = Object.entries(fields);
     if (entries.length > 0) {
       const assignments = entries.map(([column]) => `${column} = ?`).join(', ');
@@ -361,7 +381,7 @@ export class JobStore {
          WHERE job_id = ? AND event_type IN ('changes_requested', 'phase_completed')
          ORDER BY id DESC LIMIT 1`,
       )
-      .get(id) as EventRow | undefined;
+      .get(id) as Pick<EventRow, 'event_type' | 'detail'> | undefined;
 
     return row?.event_type === 'changes_requested' ? row.detail : null;
   }
@@ -376,6 +396,14 @@ export class JobStore {
       actor: row.actor,
       detail: row.detail,
     }));
+  }
+
+  /** When something last happened to this Job, as epoch milliseconds. Null for an unknown Job. */
+  lastEventAt(id: string): number | null {
+    const row = this.#db
+      .prepare('SELECT created_at FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT 1')
+      .get(id) as { created_at: string } | undefined;
+    return row ? Date.parse(row.created_at) : null;
   }
 
   #requireGate(id: string) {

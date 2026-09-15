@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { killAgent, killRunningAgents, readResult, runPhase } from './agent.ts';
@@ -21,8 +21,8 @@ import { marketingCsvPath, marketingPath, researchPath } from './phases.ts';
 import { startPreview, type Preview } from './preview.ts';
 import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { afterFeedback, isGate, type JobKind } from './states.ts';
-import { RunQueue } from './queue.ts';
-import { classifyRun, isTransient, MAX_ATTEMPTS, TRANSIENT_RETRY_DELAY_MS } from './retry.ts';
+import { RunQueue, StepRunner } from './queue.ts';
+import { classifyRun, isTransient, MAX_ATTEMPTS, TRANSIENT_RETRY_DELAY_MS, type RunOutcome } from './retry.ts';
 import { runTriage, type Triage } from './triage.ts';
 import { branchFor, createScratchWorkspace, createWorkspace, removeWorkspace } from './workspace.ts';
 
@@ -51,7 +51,10 @@ export class Engine {
   readonly #jobs: JobStore;
   readonly #profile: SiteProfile;
   readonly #notify: Notifier;
-  readonly #queue: RunQueue;
+  /** Agent processes only, one at a time. */
+  readonly #queue = new RunQueue();
+  /** Everything else a Job does: worktree, install, preview, merge, revert. Runs beside the queue. */
+  readonly #steps = new StepRunner();
   readonly #previews = new Map<string, Preview>();
   readonly #runs = new Map<string, Promise<void>>();
 
@@ -59,23 +62,20 @@ export class Engine {
     this.#jobs = jobs;
     this.#profile = profile;
     this.#notify = notify;
-    this.#queue = new RunQueue(async (task) => {
-      // A retry waits inside its own turn, so nothing reads the queue as idle in between.
-      if (task.attempt > 1) await sleep(TRANSIENT_RETRY_DELAY_MS);
-      return this.#advance(task.jobId);
-    });
   }
 
+  /** Jobs with a step in flight, whether it is building, waiting for the queue, or running an agent. */
   get depth(): number {
-    return this.#queue.depth;
+    return this.#steps.depth;
   }
 
-  /** Resolves when no Phase is running or queued. */
+  /** Resolves when nothing at all is running or queued, out-of-queue steps included. */
   async whenIdle(): Promise<void> {
-    // A failed step can queue its retry just after the queue drained, so check again.
+    // A failed step can schedule its retry just after the last one settled, so check again.
     do {
+      await this.#steps.whenIdle();
       await this.#queue.whenIdle();
-    } while (this.#queue.depth > 0);
+    } while (this.#steps.depth > 0 || this.#queue.depth > 0);
   }
 
   async startJob(
@@ -104,7 +104,7 @@ export class Engine {
       : created;
     const postedTs = await this.#notify.jobStarted(job);
     if (!existingThreadTs) this.#jobs.update(job.id, { slack_thread_ts: postedTs });
-    this.#enqueue(job.id);
+    this.#schedule(job.id);
 
     return this.#jobs.getJob(job.id)!;
   }
@@ -116,7 +116,7 @@ export class Engine {
     // directory to remove. The report copies under research/ stay for reading.
     if (job.state === 'done') return this.#teardown(job);
 
-    this.#enqueue(jobId);
+    this.#schedule(jobId);
   }
 
   async reject(jobId: string, actor: string, feedback: string | null): Promise<void> {
@@ -153,7 +153,7 @@ export class Engine {
 
     const job = this.#jobs.retryFailed(jobId, actor);
     await this.#notify.working(job, `Retrying from ${job.state}.`);
-    this.#enqueue(jobId);
+    this.#schedule(jobId);
     return true;
   }
 
@@ -166,8 +166,27 @@ export class Engine {
       .liveJobs()
       .filter((job) => job.profile === this.#profile.id && !isGate(job.state));
 
-    for (const job of stranded) this.#enqueue(job.id);
+    for (const job of stranded) this.#schedule(job.id);
     return stranded.map((job) => job.id);
+  }
+
+  /**
+   * Rejects Jobs that have waited at a Gate longer than maxAgeDays, through the same path
+   * a human reject takes: pull request closed, worktree removed, thread told. Returns the
+   * ids swept. Deliberately not run at boot; the CLI calls it on request.
+   */
+  async sweepStale(maxAgeDays: number): Promise<string[]> {
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    const stale = this.#jobs.liveJobs().filter((job) => {
+      if (job.profile !== this.#profile.id || !isGate(job.state)) return false;
+      const last = this.#jobs.lastEventAt(job.id);
+      return last !== null && last < cutoff;
+    });
+
+    for (const job of stale) {
+      await this.reject(job.id, 'sweeper', `Swept: no activity for ${maxAgeDays} days.`);
+    }
+    return stale.map((job) => job.id);
   }
 
   /** Stops everything this Engine started, so nothing is left holding a port or a tunnel. */
@@ -182,7 +201,7 @@ export class Engine {
     if (!job) return false;
 
     await this.#notify.working(job, 'Preparing a revert.');
-    this.#enqueue(jobId);
+    this.#schedule(jobId);
     return true;
   }
 
@@ -221,23 +240,34 @@ export class Engine {
 
     await this.#stopPreview(jobId);
     await this.#notify.working(job, 'Revising.');
-    this.#enqueue(jobId);
+    this.#schedule(jobId);
     return true;
   }
 
-  #enqueue(jobId: string, attempt = 1): void {
+  /**
+   * Runs what the Job's state calls for as a step of its own, after any step the Job already
+   * has in flight. Steps do not queue behind other Jobs; only the agent process inside one does.
+   */
+  #schedule(jobId: string, attempt = 1): void {
     const job = this.#jobs.getJob(jobId);
     if (!job) return;
 
-    const run = this.#queue
-      .enqueue({ jobId, phase: job.state, attempt })
+    const previous = this.#runs.get(jobId);
+    const run = this.#steps
+      .run(async () => {
+        // One step per Job at a time. The previous step's promise never rejects.
+        await previous;
+        // A retry waits inside its own step, so nothing reads the Engine as idle in between.
+        if (attempt > 1) await sleep(TRANSIENT_RETRY_DELAY_MS);
+        await this.#advance(jobId);
+      })
       .then(async (result) => {
         if (result.ok || this.#isStopped(jobId)) return;
 
-        // One more go for a network or GitHub hiccup. Queued before anything is awaited, so a
+        // One more go for a network or GitHub hiccup. Scheduled before anything is awaited, so a
         // CLI waiting for idle sees the retry.
         if (attempt === 1 && isTransient(result.error)) {
-          this.#enqueue(jobId, 2);
+          this.#schedule(jobId, 2);
           const seconds = TRANSIENT_RETRY_DELAY_MS / 1000;
           return this.#notify.working(job, `Temporary error in ${job.state}; retrying in ${seconds}s.`);
         }
@@ -254,7 +284,7 @@ export class Engine {
     });
   }
 
-  /** Runs whatever the Job's current state calls for, then queues the next step. */
+  /** Runs whatever the Job's current state calls for, then schedules the next step. */
   async #advance(jobId: string): Promise<void> {
     const job = this.#jobs.getJob(jobId);
     if (!job) return;
@@ -278,7 +308,8 @@ export class Engine {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const currentLog = logPath(job.id, phase, attempt);
       const verb = attempt === 1 ? 'Running' : 'Retrying';
-      await this.#notify.working(job, `${verb} ${phase}.\nLive log: \`${currentLog}\``);
+      // Fresh on every attempt and revision: the prompt promises each one its own budget.
+      await writeBudget(workspace, phase, this.#profile);
 
       const invocation = buildRun({
         jobId: job.id,
@@ -290,31 +321,51 @@ export class Engine {
         feedback,
         gaps,
         attachments: job.attachments,
+        // buildRun only resumes for a revision; a first pass never continues another Phase.
+        resumeSessionId: job.sessionId ?? null,
       });
 
-      const startedAt = Date.now();
-      let heartbeatInFlight = false;
-      const heartbeat = setInterval(() => {
-        if (heartbeatInFlight) return;
-        heartbeatInFlight = true;
-        const elapsed = formatElapsed(Date.now() - startedAt);
-        void this.#notify
-          .working(job, `${verb} ${phase} · ${elapsed} elapsed · process active.\nLive log: \`${currentLog}\``)
-          .catch((error: unknown) => console.error(`[${job.id}] status heartbeat failed:`, error))
-          .finally(() => (heartbeatInFlight = false));
-      }, STATUS_HEARTBEAT_MS);
-      heartbeat.unref();
-
-      let outcome;
-      try {
-        outcome = await runPhase({ jobId: job.id, invocation, phase, date: job.date, logPath: currentLog });
-      } finally {
-        clearInterval(heartbeat);
+      if (this.#queue.busy) {
+        await this.#notify.working(job, `Waiting for another Job's agent to finish before ${phase}.`);
       }
-      if (this.#isStopped(job.id)) return;
+
+      // Only the agent process takes a queue turn. Everything around it already ran outside.
+      let outcome: RunOutcome | undefined;
+      const turn = await this.#queue.enqueue({ jobId: job.id, phase, attempt }, async () => {
+        await this.#notify.working(job, `${verb} ${phase}.\nLive log: \`${currentLog}\``);
+
+        const startedAt = Date.now();
+        let heartbeatInFlight = false;
+        const heartbeat = setInterval(() => {
+          if (heartbeatInFlight) return;
+          heartbeatInFlight = true;
+          const elapsed = formatElapsed(Date.now() - startedAt);
+          void this.#notify
+            .working(job, `${verb} ${phase} · ${elapsed} elapsed · process active.\nLive log: \`${currentLog}\``)
+            .catch((error: unknown) => console.error(`[${job.id}] status heartbeat failed:`, error))
+            .finally(() => (heartbeatInFlight = false));
+        }, STATUS_HEARTBEAT_MS);
+        heartbeat.unref();
+
+        try {
+          outcome = await runPhase({ jobId: job.id, invocation, phase, date: job.date, logPath: currentLog });
+        } finally {
+          clearInterval(heartbeat);
+        }
+      });
+      if (!turn.ok) throw turn.error;
+      // A cancelled turn never ran: the Job was stopped while it waited.
+      if (this.#isStopped(job.id) || outcome === undefined) return;
       const decision = classifyRun(outcome, attempt);
 
-      if (decision.action === 'complete') return this.#phaseSucceeded(job, phase, workspace);
+      if (decision.action === 'complete') {
+        // Each Phase keeps only its own session, so a revision continues exactly that one.
+        this.#jobs.update(job.id, { session_id: outcome.sessionId ?? null });
+        if (outcome.totalCostUsd !== undefined) {
+          console.log(`[${job.id}] ${phase}: $${outcome.totalCostUsd.toFixed(2)}, ${outcome.numTurns ?? '?'} turns`);
+        }
+        return this.#phaseSucceeded(job, phase, workspace);
+      }
       if (decision.action === 'fail') return void (await this.#fail(job.id, decision.reason));
       gaps = decision.gaps;
     }
@@ -353,7 +404,7 @@ export class Engine {
     }
     if (this.#isStopped(job.id)) return;
     this.#jobs.phaseCompleted(job.id);
-    this.#enqueue(job.id);
+    this.#schedule(job.id);
   }
 
   /** Mirrors a report into this repo so it can be read without opening the Workspace. */
@@ -604,6 +655,26 @@ export class Engine {
     this.#previews.delete(jobId);
     await preview.stop();
   }
+}
+
+/**
+ * The limits the budget hook (bin/ranksmith-budget) enforces, one file per Workspace. A
+ * content Phase gets none, and the file is removed so it does not inherit research's.
+ */
+async function writeBudget(workspace: string, phase: PhaseName, profile: SiteProfile): Promise<void> {
+  const path = join(workspace, '.ranksmith', 'budget.json');
+  const { webSearches, competitorPages, marketing } = profile.budgets;
+
+  let limits: Record<string, number> | null = null;
+  if (isMarketingPhase(phase)) {
+    limits = { WebSearch: marketing.webSearches, WebFetch: marketing.pagesFetched };
+  } else if (phase === 'research' || phase === 'research_revision') {
+    limits = { WebSearch: webSearches, WebFetch: competitorPages };
+  }
+
+  if (limits === null) return rm(path, { force: true });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({ limits, used: {} }, null, 2)}\n`);
 }
 
 function formatElapsed(milliseconds: number): string {

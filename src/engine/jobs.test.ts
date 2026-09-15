@@ -247,6 +247,30 @@ describe('stopping a job', () => {
   });
 });
 
+describe('the agent session', () => {
+  it('starts unknown and is kept once a phase stores it', () => {
+    const store = openStore();
+    const job = startJob(store);
+    assert.equal(job.sessionId, null);
+
+    assert.equal(store.update(job.id, { session_id: 'sess-1' }).sessionId, 'sess-1');
+    assert.equal(store.getJob(job.id)?.sessionId, 'sess-1');
+    assert.equal(store.update(job.id, { session_id: null }).sessionId, null);
+  });
+});
+
+describe('job history', () => {
+  it('knows when a job was last touched, so a sweeper can tell how long it has waited', () => {
+    const store = openStore();
+    const before = Date.now() - 1;
+    const job = startJob(store);
+
+    const at = store.lastEventAt(job.id);
+    assert.ok(at !== null && at >= before && at <= Date.now() + 1, `unexpected timestamp ${at}`);
+    assert.equal(store.lastEventAt('CM-999'), null);
+  });
+});
+
 describe('a failed phase', () => {
   it('parks the job and keeps the reason', () => {
     const store = openStore();
