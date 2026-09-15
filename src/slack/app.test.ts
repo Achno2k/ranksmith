@@ -10,7 +10,7 @@ import {
   promptFromMention,
   threadForMention,
 } from './app.ts';
-import { contentReady, decided, gateValue, statusLines, workingStatus } from './messages.ts';
+import { contentReady, decided, feedbackNotReady, gateValue, rejected, statusLines, stopped, workingStatus } from './messages.ts';
 
 describe('native Slack status', () => {
   const job = { id: 'CM-002' } as Job;
@@ -55,6 +55,26 @@ describe('gate buttons', () => {
     );
     assert.match(JSON.stringify(after), /pull\/35/);
     assert.match(JSON.stringify(after.at(-1)), /Approved by <@U1>/);
+  });
+});
+
+describe('replies about feedback', () => {
+  it('says when feedback will count, and that done still takes it', () => {
+    assert.match(feedbackNotReady({ id: 'CM-002', state: 'merging' } as Job), /once it is done/);
+  });
+
+  it('explains a done job whose merge has not landed', () => {
+    assert.match(feedbackNotReady({ id: 'CM-002', state: 'done' } as Job), /not merged yet/);
+  });
+
+  it('closes the door on rejected and reverted jobs', () => {
+    assert.match(feedbackNotReady({ id: 'CM-002', state: 'reverted' } as Job), /closed/);
+  });
+
+  it('tells a dropped follow-up apart from a rejected job', () => {
+    assert.match(rejected({ id: 'CM-002', state: 'done' } as Job).text, /follow-up rejected/);
+    assert.match(rejected({ id: 'CM-002', state: 'rejected' } as Job).text, /Worktree removed/);
+    assert.match(stopped({ id: 'CM-002', state: 'done' } as Job).text, /follow-up stopped/);
   });
 });
 

@@ -89,3 +89,14 @@ const AFTER_FEEDBACK: Partial<Record<Gate, JobState>> = {
 };
 
 export const afterFeedback = (gate: Gate): JobState | null => AFTER_FEEDBACK[gate] ?? null;
+
+/**
+ * Where a done Job goes when someone asks for a change after it shipped. The shipped work
+ * stays as it is; a follow-up revises it and comes back through the same Gate.
+ */
+const AFTER_REOPEN = {
+  seo: 'content_revising',
+  marketing: 'marketing_revising',
+} as const satisfies Record<JobKind, JobState>;
+
+export const afterReopen = (kind: JobKind): JobState => AFTER_REOPEN[kind];

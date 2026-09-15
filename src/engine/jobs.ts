@@ -3,6 +3,7 @@ import {
   afterApproval,
   afterFeedback,
   afterPhase,
+  afterReopen,
   initialState,
   isGate,
   isRunning,
@@ -37,6 +38,10 @@ export interface Job {
   attachments: Attachment[];
   /** The pull request that undoes this Job's merged work, once one is open. */
   revertPullRequest: number | null;
+  /** True while a follow-up revises work that already shipped. Rejecting or stopping it returns to done. */
+  followUp: boolean;
+  /** During a follow-up, the pull request whose merge is live. Restored if the follow-up is dropped. */
+  shippedPullRequest: number | null;
 }
 
 export interface NewJob {
@@ -54,6 +59,7 @@ export type JobEventType =
   | 'phase_failed'
   | 'approved'
   | 'changes_requested'
+  | 'reopened'
   | 'rejected'
   | 'cancelled'
   | 'retried'
@@ -81,6 +87,8 @@ interface JobRow {
   preview_url: string | null;
   attachments: string;
   revert_pull_request: number | null;
+  follow_up: number | null;
+  shipped_pull_request: number | null;
 }
 
 interface EventRow {
@@ -104,6 +112,8 @@ const toJob = (row: JobRow): Job => ({
   previewUrl: row.preview_url,
   attachments: parseAttachments(row.attachments),
   revertPullRequest: row.revert_pull_request ?? null,
+  followUp: row.follow_up === 1,
+  shippedPullRequest: row.shipped_pull_request ?? null,
 });
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -151,7 +161,9 @@ export class JobStore {
         failed_from TEXT,
         attachments TEXT NOT NULL DEFAULT '[]',
         revert_pull_request INTEGER,
-        kind TEXT NOT NULL DEFAULT 'seo'
+        kind TEXT NOT NULL DEFAULT 'seo',
+        follow_up INTEGER NOT NULL DEFAULT 0,
+        shipped_pull_request INTEGER
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,6 +201,15 @@ export class JobStore {
       this.#db.exec("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'seo'");
     } catch {
       // Already present.
+    }
+
+    // Databases created before follow-ups existed are missing these columns.
+    for (const column of ['follow_up INTEGER NOT NULL DEFAULT 0', 'shipped_pull_request INTEGER']) {
+      try {
+        this.#db.exec(`ALTER TABLE jobs ADD COLUMN ${column}`);
+      } catch {
+        // Already present.
+      }
     }
   }
 
@@ -251,7 +272,9 @@ export class JobStore {
       throw new Error(`${id} is not running a phase; it is at ${job.state}`);
     }
     this.#record(id, 'phase_completed', 'system', null);
-    return this.#setState(id, afterPhase(job.state));
+    const next = afterPhase(job.state);
+    if (next === 'done') this.#finishFollowUp(id);
+    return this.#setState(id, next);
   }
 
   /** The Phase this Job was running failed for good. */
@@ -268,6 +291,8 @@ export class JobStore {
     if (NOT_STOPPABLE.has(job.state)) return null;
 
     this.#record(id, 'cancelled', actor, null);
+    // A stopped follow-up abandons only the revision; what shipped before it stays live.
+    if (job.followUp) return this.#dropFollowUp(id);
     return this.#setState(id, 'rejected');
   }
 
@@ -317,7 +342,9 @@ export class JobStore {
   approve(id: string, actor: string): Job {
     const gate = this.#requireGate(id);
     this.#record(id, 'approved', actor, null);
-    return this.#setState(id, afterApproval(gate));
+    const next = afterApproval(gate);
+    if (next === 'done') this.#finishFollowUp(id);
+    return this.#setState(id, next);
   }
 
   /** A human rejected at a Gate. */
@@ -329,7 +356,37 @@ export class JobStore {
     }
 
     this.#record(id, 'rejected', actor, feedback);
+    // A rejected follow-up abandons only the revision; what shipped before it stays live.
+    if (this.#require(id).followUp) return this.#dropFollowUp(id);
     return this.#setState(id, 'rejected');
+  }
+
+  /**
+   * Someone asked for a change after the Job finished. The shipped work stays live while a
+   * follow-up revises it on a fresh branch (seo) or in a fresh scratch directory (marketing)
+   * and comes back through the same Gate. Null unless the Job is done.
+   */
+  reopen(id: string, actor: string, feedback: string, attachments: Attachment[] = []): Job | null {
+    const job = this.#require(id);
+    if (job.state !== 'done') return null;
+
+    this.#record(id, 'reopened', actor, feedback);
+    this.#mergeAttachments(job, attachments);
+    this.#db
+      .prepare(
+        `UPDATE jobs SET follow_up = 1, shipped_pull_request = pull_request,
+         pull_request = NULL, branch = NULL, preview_url = NULL WHERE id = ?`,
+      )
+      .run(id);
+    return this.#setState(id, afterReopen(job.kind));
+  }
+
+  /** How many times the Job has been reopened, so each follow-up gets a branch of its own. */
+  followUpRound(id: string): number {
+    const { count } = this.#db
+      .prepare("SELECT COUNT(*) AS count FROM job_events WHERE job_id = ? AND event_type = 'reopened'")
+      .get(id) as { count: number };
+    return count;
   }
 
   /**
@@ -342,15 +399,20 @@ export class JobStore {
     if (!next) return null;
 
     this.#record(id, 'changes_requested', actor, feedback);
-    if (attachments.length > 0) {
-      const merged = new Map<string, Attachment>();
-      for (const attachment of job.attachments) merged.set(attachment.name, attachment);
-      for (const attachment of attachments) merged.set(attachment.name, attachment);
-      this.#db
-        .prepare('UPDATE jobs SET attachments = ? WHERE id = ?')
-        .run(JSON.stringify([...merged.values()]), id);
-    }
+    this.#mergeAttachments(job, attachments);
     return this.#setState(id, next);
+  }
+
+  /** A later attachment with the same name as an earlier one replaces it. */
+  #mergeAttachments(job: Job, attachments: Attachment[]): void {
+    if (attachments.length === 0) return;
+
+    const merged = new Map<string, Attachment>();
+    for (const attachment of job.attachments) merged.set(attachment.name, attachment);
+    for (const attachment of attachments) merged.set(attachment.name, attachment);
+    this.#db
+      .prepare('UPDATE jobs SET attachments = ? WHERE id = ?')
+      .run(JSON.stringify([...merged.values()]), job.id);
   }
 
   /** Feedback the next Phase must act on, or null if none is outstanding. */
@@ -358,12 +420,12 @@ export class JobStore {
     const row = this.#db
       .prepare(
         `SELECT event_type, detail FROM job_events
-         WHERE job_id = ? AND event_type IN ('changes_requested', 'phase_completed')
+         WHERE job_id = ? AND event_type IN ('changes_requested', 'reopened', 'phase_completed')
          ORDER BY id DESC LIMIT 1`,
       )
       .get(id) as EventRow | undefined;
 
-    return row?.event_type === 'changes_requested' ? row.detail : null;
+    return row && row.event_type !== 'phase_completed' ? row.detail : null;
   }
 
   history(id: string): JobEvent[] {
@@ -393,6 +455,22 @@ export class JobStore {
          VALUES (?, ?, ?, ?, ?)`,
       )
       .run(id, type, actor, detail, new Date().toISOString());
+  }
+
+  /** The follow-up merged or was approved: its pull request is the shipped one now. */
+  #finishFollowUp(id: string): void {
+    this.#db.prepare('UPDATE jobs SET follow_up = 0, shipped_pull_request = NULL WHERE id = ?').run(id);
+  }
+
+  /** The follow-up was rejected or stopped: back to done, holding the pull request that shipped. */
+  #dropFollowUp(id: string): Job {
+    this.#db
+      .prepare(
+        `UPDATE jobs SET follow_up = 0, pull_request = shipped_pull_request,
+         shipped_pull_request = NULL, preview_url = NULL WHERE id = ?`,
+      )
+      .run(id);
+    return this.#setState(id, 'done');
   }
 
   #require(id: string): Job {

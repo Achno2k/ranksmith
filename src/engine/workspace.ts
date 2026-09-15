@@ -5,8 +5,9 @@ import { workspacePath } from './paths.ts';
 import { baseRef, type SiteProfile } from './profile.ts';
 import { RESULT_PATH } from './phases.ts';
 
-export const branchFor = (profile: SiteProfile, jobId: string, slug: string): string =>
-  `${profile.repo.branchPrefix}${slug || jobId.toLowerCase()}`;
+/** Each follow-up round gets its own branch: the first one's is merged and gone. */
+export const branchFor = (profile: SiteProfile, jobId: string, slug: string, round = 0): string =>
+  `${profile.repo.branchPrefix}${slug || jobId.toLowerCase()}${round > 0 ? `-followup-${round}` : ''}`;
 
 /**
  * Cuts a fresh worktree for a Job from the profile's base ref. The human's own checkout

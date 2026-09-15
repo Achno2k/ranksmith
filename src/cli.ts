@@ -10,7 +10,7 @@ const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
   npm run job -- start [topic]     start a job; empty topic means discovery
   npm run job -- marketing [focus] start a marketing scan; empty focus means every lane
   npm run job -- approve <id>      approve at the job's current gate
-  npm run job -- feedback <id> "…" send the job back for a revision
+  npm run job -- feedback <id> "…" send the job back for a revision; a done job gets a follow-up
   npm run job -- retry <id>        re-run a failed job from where it died
   npm run job -- reject <id>       reject and clean up
   npm run job -- revert <id> [why] open a revert pull request for a done job
@@ -88,8 +88,10 @@ const consoleNotifier: Notifier = {
         : `${job.id} had not merged; its pull request was closed`,
     ),
   revertCancelled: async (job) => say(`${job.id} revert cancelled; the content stays`),
-  rejected: async (job) => say(`${job.id} rejected; workspace removed`),
-  stopped: async (job) => say(`${job.id} stopped; workspace removed`),
+  rejected: async (job) =>
+    say(job.state === 'done' ? `${job.id} follow-up rejected; what shipped stays` : `${job.id} rejected; workspace removed`),
+  stopped: async (job) =>
+    say(job.state === 'done' ? `${job.id} follow-up stopped; what shipped stays` : `${job.id} stopped; workspace removed`),
   failed: async (job, reason) => {
     say(`${job.id} FAILED`);
     console.log(`\n${reason}\n\n  logs: ${join(jobDir(job.id), 'logs')}\n  workspace kept: ${workspacePath(job.id)}\n`);
@@ -136,7 +138,14 @@ try {
       if (text === '') throw new Error('Feedback text is required.');
 
       const accepted = await engine.feedback(id, 'cli', text);
-      if (!accepted) throw new Error(`${id} is not at a gate; it is ${jobs.getJob(id)?.state}.`);
+      if (!accepted) {
+        const state = jobs.getJob(id)?.state;
+        throw new Error(
+          state === 'done'
+            ? `${id} is done but its pull request has not merged yet; try again once it has.`
+            : `${id} is neither at a gate nor done; it is ${state}.`,
+        );
+      }
       await engine.whenIdle();
       break;
     }

@@ -24,6 +24,13 @@ Mention `@RankSmith` in the Job thread when giving feedback; unmentioned replies
 Use `@RankSmith stop` in that thread to stop an active Job. Only a human moves a job
 through a gate.
 
+`done` is not the end of the thread. A change asked for after the Job shipped starts a
+follow-up: a fresh worktree off the base branch (the shipped content is already there), the
+revision phase with that feedback, a new pull request, the same content gate, merge, `done`
+again. Until the shipped pull request has actually merged, RankSmith asks you to wait. Rejecting or stopping a follow-up drops only the revision; what shipped stays as it
+was, and a later `revert` still undoes the most recent merge. A follow-up on a marketing
+scan revises the report the same way and closes on approval.
+
 A failed Job keeps its worktree. `@RankSmith retry` in its thread runs it again from the step
 that failed. The Engine's own steps (push, pull request, preview) also retry once on their
 own, 30 seconds later, when the error looks temporary: network, GitHub 5xx, rate limits, or a
@@ -33,7 +40,11 @@ Every other mention in a Job thread goes through a quick read-only Claude call
 (`claude-sonnet-5`) that decides whether it is a question, feedback, a revert, or a stop.
 Questions ("is this on staging?") get an answer in the thread, checked against the pull
 request, its workflow runs, and the repo. The Engine still decides what is allowed: feedback
-only counts at a gate, and a refusal is a normal thread reply, not an ephemeral one.
+counts at a gate or once the Job is done, and a refusal is a normal thread reply, not an
+ephemeral one.
+
+Anyone in the channel can ask a question or request a change in a Job thread. Starting a
+Job, the gate buttons, `stop`, `retry`, and `revert` stay with the approvers list.
 
 A `done` Job can be reverted by asking in its thread, e.g. `@RankSmith revert this`:
 

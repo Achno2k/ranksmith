@@ -137,9 +137,20 @@ export const merging = (job: Job, prUrl: string) => ({
   text: `${job.id} approved. Auto-merge queued behind CI: ${prUrl}`,
 });
 
-export const rejected = (job: Job) => ({ text: `${job.id} rejected. Worktree removed.` });
+/** A Job that lands back at done was a follow-up: only the revision went, the shipped work stays. */
+export const rejected = (job: Job) => ({
+  text:
+    job.state === 'done'
+      ? `${job.id} follow-up rejected. What shipped before stays as it is.`
+      : `${job.id} rejected. Worktree removed.`,
+});
 
-export const stopped = (job: Job) => ({ text: `${job.id} stopped. Worktree removed.` });
+export const stopped = (job: Job) => ({
+  text:
+    job.state === 'done'
+      ? `${job.id} follow-up stopped. What shipped before stays as it is.`
+      : `${job.id} stopped. Worktree removed.`,
+});
 
 export const failed = (job: Job, reason: string) => ({
   text: `${job.id} failed.\n\`\`\`${reason}\`\`\`\nWorktree kept for inspection. Mention \`@RankSmith retry\` in this thread to run it again from the step that failed.`,
@@ -150,8 +161,17 @@ export const notApprover = 'You are not an approver for RankSmith jobs.';
 export const mentionUsage =
   'Give RankSmith a topic or request, for example: `@RankSmith research event lead capture`, or `@RankSmith marketing` for a marketing scan.';
 
-export const feedbackNotReady = (job: Job) =>
-  `${job.id} is currently \`${job.state}\`. Mention feedback is accepted when the Job is waiting for review.`;
+export const feedbackNotReady = (job: Job) => {
+  if (job.state === 'done') {
+    return `${job.id} is done but its pull request has not merged yet. Mention me again once CI has merged it and I will start a follow-up.`;
+  }
+  if (job.state === 'rejected' || job.state === 'reverted') {
+    return `${job.id} is \`${job.state}\` and closed. Start a new Job for further changes.`;
+  }
+  return `${job.id} is \`${job.state}\` right now. Feedback is accepted while the Job waits for review, or once it is done.`;
+};
+
+export const approversOnly = 'Only an approver can do that. Anyone can ask a question or request a change here.';
 
 export const stopInJobThread = 'Use `@RankSmith stop` inside the RankSmith Job thread you want to stop.';
 

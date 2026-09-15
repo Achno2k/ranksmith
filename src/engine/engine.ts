@@ -120,10 +120,13 @@ export class Engine {
   }
 
   async reject(jobId: string, actor: string, feedback: string | null): Promise<void> {
-    if (this.#jobs.getJob(jobId)?.state === 'revert_review') return this.#cancelRevert(jobId, actor);
+    const before = this.#jobs.getJob(jobId);
+    if (before?.state === 'revert_review') return this.#cancelRevert(jobId, actor);
 
     const job = this.#jobs.reject(jobId, actor, feedback);
-    if (job.pullRequest !== null) await closePullRequest(this.#profile, job.pullRequest);
+    // A rejected follow-up is back at done holding the shipped pull request; only its own closes.
+    const open = before?.pullRequest ?? null;
+    if (open !== null) await closePullRequest(this.#profile, open);
     await this.#teardown(job);
     await this.#notify.rejected(job);
   }
@@ -132,6 +135,8 @@ export class Engine {
   async stop(jobId: string, actor: string): Promise<boolean> {
     const stopped = this.#jobs.cancel(jobId, actor);
     if (!stopped) return false;
+    // A stopped follow-up is back at done, and the pull request it holds is the merged one.
+    const shipped = stopped.state === 'done' ? stopped.pullRequest : null;
 
     // Mark the Job terminal before touching the process so an exiting phase cannot advance it.
     this.#queue.cancel(jobId);
@@ -142,7 +147,10 @@ export class Engine {
 
     // A preview or PR may have appeared while a non-agent command was winding down.
     const latest = this.#jobs.getJob(jobId) ?? stopped;
-    if (latest.pullRequest !== null) await closePullRequest(this.#profile, latest.pullRequest);
+    if (latest.pullRequest !== null && latest.pullRequest !== shipped) {
+      await closePullRequest(this.#profile, latest.pullRequest);
+    }
+    if (shipped !== null && latest.pullRequest !== shipped) this.#jobs.update(jobId, { pull_request: shipped });
     await this.#teardown(latest);
     return true;
   }
@@ -204,10 +212,15 @@ export class Engine {
     return runTriage({ job, text, cwd, context: await this.#describeForTriage(job) });
   }
 
-  /** Explicit reviewer feedback. Only counts while the Job waits at a Gate. */
+  /**
+   * Explicit reviewer feedback. Counts while the Job waits at a Gate, and again once it is
+   * done: a finished Job is not closed to change, it starts a follow-up round.
+   */
   async feedback(jobId: string, actor: string, text: string, attachments: AttachmentInput[] = []): Promise<boolean> {
     const job = this.#jobs.getJob(jobId);
-    if (!job || !isGate(job.state) || afterFeedback(job.state) === null) return false;
+    if (!job) return false;
+    if (job.state === 'done') return this.#reopen(job, actor, text, attachments);
+    if (!isGate(job.state) || afterFeedback(job.state) === null) return false;
 
     await this.#ingestAttachments(jobId, attachments);
 
@@ -225,6 +238,48 @@ export class Engine {
     return true;
   }
 
+  /** A change asked for after the Job finished. The shipped work stays live while it is revised. */
+  async #reopen(job: Job, actor: string, text: string, attachments: AttachmentInput[]): Promise<boolean> {
+    // Done means the merge is queued, not landed. A follow-up branch cut from the base
+    // branch before then has nothing to revise, so wait for the pull request to merge.
+    if (job.kind === 'seo' && job.pullRequest !== null) {
+      const shipped = await pullRequestInfo(this.#profile, job.pullRequest).catch(() => null);
+      if (shipped?.state === 'OPEN') return false;
+    }
+
+    await this.#ingestAttachments(job.id, attachments);
+    const reopened = this.#jobs.reopen(
+      job.id,
+      actor,
+      text,
+      attachments.map(({ name, mimetype }) => ({ name, mimetype })),
+    );
+    if (!reopened) return false;
+
+    // The scratch directory went with approval, and a revision needs the report it revises.
+    if (job.kind === 'marketing') await this.#restoreReport(job);
+
+    await this.#notify.working(reopened, job.kind === 'marketing' ? 'Revising the report.' : 'Revising the shipped content.');
+    this.#enqueue(job.id);
+    return true;
+  }
+
+  /** Seeds a fresh scratch directory with the copies kept under research/ for reading. */
+  async #restoreReport(job: Job): Promise<void> {
+    const workspace = await createScratchWorkspace(job.id);
+    const copies: [string, string][] = [
+      ['opportunities.md', marketingPath(job.date)],
+      ['targets.csv', marketingCsvPath(job.date)],
+    ];
+    for (const [name, target] of copies) {
+      const destination = join(workspace, target);
+      await mkdir(dirname(destination), { recursive: true });
+      await copyFile(reviewDocPath(job.id, job.date, name), destination).catch((error: unknown) =>
+        console.warn(`[${job.id}] no ${name} to restore; the revision starts from scratch (${String(error)}).`),
+      );
+    }
+  }
+
   #enqueue(jobId: string, attempt = 1): void {
     const job = this.#jobs.getJob(jobId);
     if (!job) return;
@@ -232,7 +287,8 @@ export class Engine {
     const run = this.#queue
       .enqueue({ jobId, phase: job.state, attempt })
       .then(async (result) => {
-        if (result.ok || this.#isStopped(jobId)) return;
+        if (result.ok) return;
+        if (this.#isStopped(jobId)) return console.error(`[${jobId}] error after the Job was stopped:`, result.error);
 
         // One more go for a network or GitHub hiccup. Queued before anything is awaited, so a
         // CLI waiting for idle sees the retry.
@@ -366,7 +422,8 @@ export class Engine {
 
   async #buildPreview(job: Job): Promise<void> {
     const workspace = workspacePath(job.id);
-    const branch = job.branch ?? branchFor(this.#profile, job.id, job.slug ?? '');
+    const round = this.#jobs.followUpRound(job.id);
+    const branch = job.branch ?? branchFor(this.#profile, job.id, job.slug ?? '', round);
 
     if (this.#isStopped(job.id)) return;
     await this.#notify.working(job, 'Pushing branch and opening a pull request.');
@@ -377,7 +434,7 @@ export class Engine {
       this.#profile,
       workspace,
       branch,
-      `feat(seo): ${job.slug ?? job.id}`,
+      `feat(seo): ${job.slug ?? job.id}${job.followUp ? ` (follow-up ${round})` : ''}`,
       pullRequestBody(job),
     );
     this.#jobs.update(job.id, { pull_request: number, branch });
@@ -502,8 +559,16 @@ export class Engine {
             `Base branch: ${baseRef(this.#profile)}. Merging into it deploys to staging; production needs a human-created tag.`,
           ];
 
+    if (job.state === 'done') {
+      lines.push('Done is not the end: asking for a change here reopens the Job for a follow-up revision.');
+    }
+    if (job.followUp) {
+      lines.push(`Follow-up round ${this.#jobs.followUpRound(job.id)}: what shipped before stays live until this revision is approved.`);
+    }
+
     const pullRequests = [
       ['Pull request', job.pullRequest],
+      ['Shipped pull request', job.shippedPullRequest],
       ['Revert pull request', job.revertPullRequest],
     ] as const;
 
@@ -546,7 +611,7 @@ export class Engine {
     }
 
     await this.#notify.working(job, 'Preparing a fresh worktree and installing dependencies.');
-    const branch = branchFor(this.#profile, job.id, job.slug ?? '');
+    const branch = branchFor(this.#profile, job.id, job.slug ?? '', this.#jobs.followUpRound(job.id));
     const workspace = await createWorkspace(this.#profile, job.id, branch);
     this.#jobs.update(job.id, { branch });
 
@@ -573,8 +638,10 @@ export class Engine {
     await this.#notify.failed(job, reason);
   }
 
+  /** Rejected, or a follow-up dropped back to done: either way nothing in flight may advance the Job. */
   #isStopped(jobId: string): boolean {
-    return this.#jobs.getJob(jobId)?.state === 'rejected';
+    const state = this.#jobs.getJob(jobId)?.state;
+    return state === 'rejected' || state === 'done';
   }
 
   /** Failed Jobs keep their Workspace for inspection; finished ones do not. */
@@ -618,6 +685,7 @@ function pullRequestBody(job: Job): string {
     '',
     `Research: \`docs/seo-content/${job.date}-research.md\``,
     job.topic ? `Requested topic: ${job.topic}` : 'Topic chosen by discovery.',
+    ...(job.shippedPullRequest !== null ? [`Follow-up to #${job.shippedPullRequest}, asked for in Slack after it shipped.`] : []),
     '',
     'Reviewed through Slack. Do not merge manually while the job is open.',
   ].join('\n');
