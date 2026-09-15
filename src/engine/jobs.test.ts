@@ -441,3 +441,136 @@ describe('reverting a finished job', () => {
     assert.equal(store.getJob(id)?.state, 'reverting');
   });
 });
+
+describe('changing a job after it is done', () => {
+  const shipped = (store: JobStore) => {
+    const job = startJob(store);
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+    store.phaseCompleted(job.id);
+    store.update(job.id, { branch: 'seo/camcard', pull_request: 35, preview_url: 'https://p.example' });
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+    store.phaseCompleted(job.id);
+    return job.id;
+  };
+
+  it('only reopens a job that is done', () => {
+    const store = openStore();
+    const job = startJob(store);
+
+    assert.equal(store.reopen(job.id, 'U2', 'tighten the intro'), null);
+    assert.equal(store.getJob(job.id)?.state, 'researching');
+  });
+
+  it('sends a done job back to content revision on a clean slate, keeping the shipped pull request aside', () => {
+    const store = openStore();
+    const id = shipped(store);
+
+    const reopened = store.reopen(id, 'U2', 'tighten the intro');
+
+    assert.equal(reopened?.state, 'content_revising');
+    assert.equal(reopened?.followUp, true);
+    assert.equal(reopened?.branch, null);
+    assert.equal(reopened?.pullRequest, null);
+    assert.equal(reopened?.previewUrl, null);
+    assert.equal(reopened?.shippedPullRequest, 35);
+    assert.equal(store.pendingFeedback(id), 'tighten the intro');
+    assert.equal(store.history(id).at(-1)?.type, 'reopened');
+    assert.equal(store.liveJobs().length, 1);
+  });
+
+  it('counts rounds so each follow-up can have its own branch', () => {
+    const store = openStore();
+    const id = shipped(store);
+    assert.equal(store.followUpRound(id), 0);
+
+    store.reopen(id, 'U2', 'first');
+    assert.equal(store.followUpRound(id), 1);
+  });
+
+  it('is done again once the follow-up merges, with the new pull request as the shipped one', () => {
+    const store = openStore();
+    const id = shipped(store);
+    store.reopen(id, 'U2', 'tighten the intro');
+
+    assert.equal(store.phaseCompleted(id).state, 'preview_building');
+    store.update(id, { branch: 'seo/camcard-followup-1', pull_request: 41 });
+    assert.equal(store.phaseCompleted(id).state, 'content_review');
+    assert.equal(store.approve(id, 'U1').state, 'merging');
+
+    const done = store.phaseCompleted(id);
+    assert.equal(done.state, 'done');
+    assert.equal(done.followUp, false);
+    assert.equal(done.pullRequest, 41);
+    assert.equal(done.shippedPullRequest, null);
+    assert.equal(store.pendingFeedback(id), null);
+  });
+
+  it('returns to done with the shipped pull request when the follow-up is rejected', () => {
+    const store = openStore();
+    const id = shipped(store);
+    store.reopen(id, 'U2', 'tighten the intro');
+    store.phaseCompleted(id);
+    store.update(id, { pull_request: 41 });
+    store.phaseCompleted(id);
+
+    const back = store.reject(id, 'U1', 'not needed');
+    assert.equal(back.state, 'done');
+    assert.equal(back.followUp, false);
+    assert.equal(back.pullRequest, 35);
+    assert.equal(back.shippedPullRequest, null);
+    assert.equal(store.history(id).at(-1)?.type, 'rejected');
+  });
+
+  it('returns to done with the shipped pull request when the follow-up is stopped', () => {
+    const store = openStore();
+    const id = shipped(store);
+    store.reopen(id, 'U2', 'tighten the intro');
+
+    const back = store.cancel(id, 'U1');
+    assert.equal(back?.state, 'done');
+    assert.equal(back?.pullRequest, 35);
+    assert.equal(back?.followUp, false);
+  });
+
+  it('can still be reverted after a dropped follow-up', () => {
+    const store = openStore();
+    const id = shipped(store);
+    store.reopen(id, 'U2', 'tighten the intro');
+    store.cancel(id, 'U1');
+
+    assert.equal(store.requestRevert(id, 'U1', 'undo')?.state, 'reverting');
+  });
+
+  it('reopens a finished marketing scan for another pass at the report', () => {
+    const store = openStore();
+    const job = store.createJob({
+      profile: 'connectmachine',
+      jobPrefix: 'CM',
+      kind: 'marketing',
+      topic: null,
+      slackChannel: 'C123',
+      attachments: [],
+    });
+    store.phaseCompleted(job.id);
+    store.approve(job.id, 'U1');
+
+    assert.equal(store.reopen(job.id, 'U2', 'add EU events')?.state, 'marketing_revising');
+    assert.equal(store.pendingFeedback(job.id), 'add EU events');
+    assert.equal(store.phaseCompleted(job.id).state, 'marketing_review');
+
+    const done = store.approve(job.id, 'U1');
+    assert.equal(done.state, 'done');
+    assert.equal(done.followUp, false);
+  });
+
+  it('keeps attachments sent with the change request', () => {
+    const store = openStore();
+    const id = shipped(store);
+
+    store.reopen(id, 'U2', 'use this screenshot', [{ name: 'shot.png', mimetype: 'image/png' }]);
+
+    assert.deepEqual(store.getJob(id)?.attachments, [{ name: 'shot.png', mimetype: 'image/png' }]);
+  });
+});

@@ -46,6 +46,13 @@ A point where a Job stops and waits for a human. Only a human action moves a Job
 through a Gate. An agent may never infer that a Gate was passed, and discussion is
 not approval.
 
+## Follow-up
+
+Revising a `done` Job because someone asked for a change after it shipped. The shipped work
+stays live while the Follow-up runs through the same Phase and Gate the original did. Dropping
+a Follow-up (reject or stop) returns the Job to `done` unchanged. The Job keeps its ID: the
+thread is the unit humans refer to, and a change to CM-006 belongs in CM-006.
+
 ## Revert
 
 Undoing a `done` Job's merged work with a new pull request. It goes through its own

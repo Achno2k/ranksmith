@@ -353,7 +353,10 @@ export function registerHandlers(
 ): void {
   const allowed = (userId: string) => config.approvers.length === 0 || config.approvers.includes(userId);
 
-  /** A mention in a Job thread: triage says what it is, the Engine decides whether it is allowed now. */
+  /**
+   * A mention in a Job thread: triage says what it is, the Engine decides whether it is allowed
+   * now. Anyone in the channel may ask or request a change; undoing work stays with approvers.
+   */
   const answerInThread = async (
     jobId: string,
     userId: string,
@@ -378,9 +381,11 @@ export function registerHandlers(
         if (!(await engine.feedback(job.id, userId, prompt, attachments))) await reply(messages.feedbackNotReady(job));
         return;
       case 'revert':
+        if (!allowed(userId)) return reply(messages.approversOnly);
         if (!(await engine.revert(job.id, userId, prompt))) await reply(messages.revertNotAvailable(job));
         return;
       case 'stop':
+        if (!allowed(userId)) return reply(messages.approversOnly);
         if (!(await engine.stop(job.id, userId))) await reply(messages.stopNotActive(job));
         return;
     }
@@ -411,7 +416,13 @@ export function registerHandlers(
   app.event('app_mention', async ({ event, context, client }) => {
     if (!event.user) return;
 
-    if (!allowed(event.user)) {
+    const threadJob = event.thread_ts
+      ? jobs.jobForThread(event.channel, event.thread_ts)
+      : null;
+
+    // Starting a Job is for approvers. Inside a Job thread anyone may talk to RankSmith;
+    // what they may make it do is decided per intent below.
+    if (!threadJob && !allowed(event.user)) {
       await client.chat.postEphemeral({
         channel: event.channel,
         user: event.user,
@@ -439,10 +450,6 @@ export function registerHandlers(
       if (code !== 'already_reacted') console.error('Could not acknowledge app mention:', error);
     }
 
-    const threadJob = event.thread_ts
-      ? jobs.jobForThread(event.channel, event.thread_ts)
-      : null;
-
     // Everyone reviewing a Job reads its thread, so replies there are never ephemeral.
     const reply = async (text: string): Promise<void> => {
       await client.chat.postMessage({ channel: event.channel, thread_ts: threadForMention(event), text });
@@ -455,6 +462,8 @@ export function registerHandlers(
           user: event.user,
           text: messages.stopInJobThread,
         });
+      } else if (!allowed(event.user)) {
+        await reply(messages.approversOnly);
       } else if (!(await engine.stop(threadJob.id, event.user))) {
         await reply(messages.stopNotActive(threadJob));
       }
@@ -468,6 +477,8 @@ export function registerHandlers(
           user: event.user,
           text: messages.retryInJobThread,
         });
+      } else if (!allowed(event.user)) {
+        await reply(messages.approversOnly);
       } else if (!(await engine.retry(threadJob.id, event.user))) {
         await reply(messages.retryNotFailed(threadJob));
       }

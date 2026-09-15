@@ -60,7 +60,7 @@ export function buildTriage({ job, text, context, cwd }: TriageRequest) {
       '',
       'Pick exactly one:',
       '- question: wants information about the job, its research, content, pull request, preview or deployment.',
-      '- feedback: asks for the research or content to change.',
+      '- feedback: asks for the research, content or report to change, including after the Job is done.',
       '- revert: asks to undo, roll back or revert work that already shipped.',
       '- stop: asks to stop or cancel the job while it is still running.',
       'If it is unclear, pick question. A wrong revision costs half an hour; a wrong answer costs one follow-up.',

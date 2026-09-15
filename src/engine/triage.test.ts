@@ -18,6 +18,8 @@ const JOB: Job = {
   previewUrl: null,
   attachments: [],
   revertPullRequest: null,
+  followUp: false,
+  shippedPullRequest: null,
 };
 
 describe('reading the intent of a thread mention', () => {
