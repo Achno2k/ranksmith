@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  deploy:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Require deploy secrets
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ]; then
+            echo "::error::Set EC2_HOST and EC2_SSH_KEY in the repository's secrets (see README, Deploying)."
+            exit 1
+          fi
+      - name: Deploy over SSH
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # The script on the host is the one from the commit being deployed: fetch first, then run it.
+          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=20 "$USER@$HOST" \
+            'cd ~/projects/ranksmith && git fetch --prune origin && git checkout --quiet origin/main -- scripts/deploy.sh && bash scripts/deploy.sh'

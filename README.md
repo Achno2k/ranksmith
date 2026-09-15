@@ -82,6 +82,19 @@ ranked top 10 with next actions and evidence, drafts, `/seo` handoffs, gaps) and
 URL). Nothing is sent, posted, or imported into a CRM. Feedback at the gate sends it back for
 a deeper pass. The agent may read the site checkout for product facts but cannot edit it.
 
+## Deploying
+
+RankSmith runs on one EC2 host as the `ranksmith` systemd unit, from a checkout at
+`~/projects/ranksmith`. Every push to `main` runs `.github/workflows/ci.yml`: typecheck and
+tests, then `scripts/deploy.sh` over SSH, which resets the checkout to `origin/main`, runs
+`npm ci`, waits (up to 15 minutes) for any agent phase in flight, and restarts the unit. The
+same script works by hand: `ssh` in and run `bash scripts/deploy.sh`.
+
+The workflow needs three repository secrets: `EC2_HOST` (the public DNS name), `EC2_SSH_KEY`
+(the private key that reaches it), and optionally `EC2_USER` (defaults to `ubuntu`). It
+deploys through a GitHub environment named `production`, so approvals or branch rules can
+be added there later.
+
 ## Setup
 
 ```bash
