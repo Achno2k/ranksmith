@@ -18,7 +18,7 @@ import { buildRun } from './invocation.ts';
 import type { AttachmentInput, Job, JobStore } from './jobs.ts';
 import { attachmentsDir, logPath, reviewDocPath, workspaceAttachmentsDir, workspacePath } from './paths.ts';
 import { marketingCsvPath, marketingPath, researchPath } from './phases.ts';
-import { startPreview, type Preview } from './preview.ts';
+import { builtPageExists, deployPreview, previewLink, type CloudflareCredentials } from './preview.ts';
 import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { afterFeedback, isGate, type JobKind } from './states.ts';
 import { RunQueue, StepRunner, type RunResult } from './queue.ts';
@@ -45,8 +45,6 @@ export interface Notifier {
   /** `prUrl` is the revert pull request, or null when the original was closed before it merged. */
   reverted(job: Job, prUrl: string | null): Promise<void>;
   revertCancelled(job: Job): Promise<void>;
-  /** A preview was rebuilt for a Job already at content review; the Gate message stays as it was. */
-  previewReady(job: Job, url: string, prUrl: string): Promise<void>;
 }
 
 export class Engine {
@@ -55,17 +53,17 @@ export class Engine {
   readonly #notify: Notifier;
   /** Agent processes only, one at a time. */
   readonly #queue = new RunQueue();
-  /** Everything else a Job does: worktree, install, preview, merge, revert. Runs beside the queue. */
+  /** Everything else a Job does: worktree, install, preview deploy, merge, revert. Runs beside the queue. */
   readonly #steps = new StepRunner();
-  readonly #previews = new Map<string, Preview>();
   readonly #runs = new Map<string, Promise<void>>();
-  /** Jobs whose preview the last resume() set out to rebuild, so boot can log them. */
-  #previewRebuilds: string[] = [];
+  /** Asked for at deploy time, not at boot, so a CLI without Cloudflare set up can still run a scan. */
+  readonly #cloudflare: () => CloudflareCredentials;
 
-  constructor(jobs: JobStore, profile: SiteProfile, notify: Notifier) {
+  constructor(jobs: JobStore, profile: SiteProfile, notify: Notifier, cloudflare: () => CloudflareCredentials) {
     this.#jobs = jobs;
     this.#profile = profile;
     this.#notify = notify;
+    this.#cloudflare = cloudflare;
   }
 
   /** Jobs with a step in flight, whether it is building, waiting for the queue, or running an agent. */
@@ -179,41 +177,7 @@ export class Engine {
       .filter((job) => job.profile === this.#profile.id && !isGate(job.state));
 
     for (const job of stranded) this.#schedule(job.id);
-
-    // Previews died with the last process. A Job at content review has nothing else to wait
-    // for, so serve its worktree again rather than leave a dead link in the thread.
-    this.#previewRebuilds = this.#jobs
-      .liveJobs()
-      .filter((job) => job.profile === this.#profile.id && job.kind === 'seo' && job.state === 'content_review')
-      .map((job) => {
-        this.#runStep(job.id, () => this.#rebuildPreview(job.id, 'engine', { quietWhenGone: false }), (result) =>
-          this.#previewRebuildFailed(job.id, result),
-        );
-        return job.id;
-      });
-
     return stranded.map((job) => job.id);
-  }
-
-  /** The Jobs the last resume() tried to give a fresh preview. */
-  get previewRebuilds(): readonly string[] {
-    return this.#previewRebuilds;
-  }
-
-  /**
-   * Serves a Job's worktree behind a new tunnel from Slack or the CLI. False unless the Job is
-   * a seo Job at content review whose worktree is still on disk. The rebuild runs as a step of
-   * its own, never as an agent turn, so a build elsewhere does not hold it up.
-   */
-  async rebuildPreview(jobId: string, actor: string): Promise<boolean> {
-    const job = this.#jobs.getJob(jobId);
-    if (!job || job.kind !== 'seo' || job.state !== 'content_review') return false;
-    if (!(await exists(workspacePath(jobId)))) return false;
-
-    this.#runStep(jobId, () => this.#rebuildPreview(jobId, actor, { quietWhenGone: true }), (result) =>
-      this.#previewRebuildFailed(jobId, result),
-    );
-    return true;
   }
 
   /**
@@ -235,10 +199,9 @@ export class Engine {
     return stale.map((job) => job.id);
   }
 
-  /** Stops everything this Engine started, so nothing is left holding a port or a tunnel. */
+  /** Stops every agent this Engine started. Previews are static deployments and need nothing kept alive. */
   async shutdown(): Promise<void> {
     killRunningAgents();
-    await Promise.all([...this.#previews.keys()].map((jobId) => this.#stopPreview(jobId)));
   }
 
   /** Undoes a finished Job's merged work behind a new pull request and its own Gate. */
@@ -289,7 +252,6 @@ export class Engine {
     );
     if (!updated) return false;
 
-    await this.#stopPreview(jobId);
     await this.#notify.working(job, 'Revising.');
     this.#schedule(jobId);
     return true;
@@ -543,64 +505,30 @@ export class Engine {
     this.#jobs.update(job.id, { pull_request: number, branch });
     if (this.#isStopped(job.id)) return;
 
-    await this.#notify.working(job, 'Building a preview. This takes a few minutes.');
-    const preview = await this.#servePreview(job, workspace);
-    this.#jobs.update(job.id, { preview_url: preview.url });
+    await this.#notify.working(job, 'Building the site and deploying a preview. This takes a few minutes.');
+    const deploy = await deployPreview(this.#profile, workspace, branch, this.#cloudflare());
+    const url = await this.#previewUrl(job, workspace, deploy.url);
+    this.#jobs.update(job.id, { preview_url: url });
     if (this.#isStopped(job.id)) return;
 
     const advanced = this.#jobs.phaseCompleted(job.id);
     await this.#notify.contentReady(advanced, await pullRequestUrl(this.#profile, number));
   }
 
-  /** Builds and tunnels a worktree, and tells the thread if the tunnel later dies on its own. */
-  async #servePreview(job: Job, workspace: string): Promise<Preview> {
-    const preview = await startPreview(this.#profile, workspace, {
-      onDied: (reason) => {
-        if (this.#previews.get(job.id) === preview) this.#previews.delete(job.id);
-        void this.#notify
-          .working(
-            job,
-            `Preview went down (${reason}). Mention @RankSmith with \`new preview\` to rebuild it, or approve from the pull request.`,
-          )
-          .catch(() => {});
-      },
-    });
-    this.#previews.set(job.id, preview);
-    return preview;
-  }
-
   /**
-   * The step behind rebuildPreview and resume(). Re-reads the Job first: the step may have
-   * waited behind another, and an approval or feedback meanwhile means there is nothing to serve.
+   * The deployment URL plus the page the content Phase named, when the build has that page.
+   * A missing or unbuilt path is worth a note, never a failed step: the site root still works.
    */
-  async #rebuildPreview(jobId: string, actor: string, { quietWhenGone }: { quietWhenGone: boolean }): Promise<void> {
-    const job = this.#jobs.getJob(jobId);
-    if (!job || job.state !== 'content_review') return;
+  async #previewUrl(job: Job, workspace: string, deployUrl: string): Promise<string> {
+    const path = await readResult(workspace)
+      .then((result) => (typeof result['preview_path'] === 'string' ? result['preview_path'] : null))
+      .catch(() => null);
+    const built = path !== null && (await builtPageExists(workspace, this.#profile.preview.outputDir, path));
 
-    const workspace = workspacePath(jobId);
-    if (!(await exists(workspace))) {
-      if (!quietWhenGone) {
-        await this.#notify.working(job, 'Preview cannot be rebuilt: the worktree is gone. Review from the pull request.');
-      }
-      return;
+    if (path !== null && !built) {
+      await this.#notify.working(job, `preview_path ${path} was not found in the build; linking the site root.`);
     }
-
-    await this.#stopPreview(jobId);
-    await this.#notify.working(job, 'Rebuilding the preview. This takes a few minutes.');
-    const preview = await this.#servePreview(job, workspace);
-    if (this.#jobs.getJob(jobId)?.state !== 'content_review') return this.#stopPreview(jobId);
-
-    const rebuilt = this.#jobs.previewRebuilt(jobId, actor, preview.url);
-    const prUrl = rebuilt.pullRequest === null ? 'unavailable' : await pullRequestUrl(this.#profile, rebuilt.pullRequest);
-    await this.#notify.previewReady(rebuilt, preview.url, prUrl);
-  }
-
-  /** A preview that would not come up leaves the Job at its Gate; the pull request still works. */
-  async #previewRebuildFailed(jobId: string, result: RunResult): Promise<void> {
-    if (result.ok) return;
-    const job = this.#jobs.getJob(jobId);
-    if (!job) return;
-    await this.#notify.working(job, `Preview could not be rebuilt (${String(result.error)}). Review from the pull request.`);
+    return previewLink(deployUrl, path, built);
   }
 
   async #merge(job: Job): Promise<void> {
@@ -701,7 +629,7 @@ export class Engine {
             `Topic: ${job.topic ?? 'none (discovery mode)'}`,
             `Slug: ${job.slug ?? 'not chosen yet'}`,
             `Research document: docs/seo-content/${job.date}-research.md`,
-            `Preview: ${job.previewUrl ?? 'none'} (previews stop once review ends)`,
+            `Preview: ${job.previewUrl ?? 'none'} (the preview link is permanent)`,
             `Base branch: ${baseRef(this.#profile)}. Merging into it deploys to staging; production needs a human-created tag.`,
           ];
 
@@ -780,7 +708,6 @@ export class Engine {
   async #fail(jobId: string, reason: string): Promise<void> {
     if (this.#isStopped(jobId)) return;
     const job = this.#jobs.phaseFailed(jobId, reason);
-    await this.#stopPreview(jobId);
     await this.#notify.failed(job, reason);
   }
 
@@ -792,7 +719,6 @@ export class Engine {
 
   /** Failed Jobs keep their Workspace for inspection; finished ones do not. */
   async #teardown(job: Job): Promise<void> {
-    await this.#stopPreview(job.id);
     await removeWorkspace(this.#profile, job.id, job.branch);
     await this.#removeAttachments(job.id);
   }
@@ -811,12 +737,6 @@ export class Engine {
     }
   }
 
-  async #stopPreview(jobId: string): Promise<void> {
-    const preview = this.#previews.get(jobId);
-    if (!preview) return;
-    this.#previews.delete(jobId);
-    await preview.stop();
-  }
 }
 
 /**
@@ -838,12 +758,6 @@ async function writeBudget(workspace: string, phase: PhaseName, profile: SitePro
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ limits, used: {} }, null, 2)}\n`);
 }
-
-const exists = (path: string): Promise<boolean> =>
-  access(path).then(
-    () => true,
-    () => false,
-  );
 
 function formatElapsed(milliseconds: number): string {
   const minutes = Math.max(1, Math.floor(milliseconds / 60_000));

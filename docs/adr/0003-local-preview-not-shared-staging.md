@@ -1,6 +1,9 @@
 ---
-status: accepted
+status: superseded
 ---
+
+> **2026-09-16:** Previews are now static deployments on Cloudflare Pages; see ADR 0006. The
+> reasons for staying off shared staging still stand.
 
 # Content is reviewed on a local Preview, not on shared staging
 

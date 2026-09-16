@@ -69,8 +69,7 @@ export type JobEventType =
   | 'cancelled'
   | 'retried'
   | 'revert_requested'
-  | 'revert_cancelled'
-  | 'preview_rebuilt';
+  | 'revert_cancelled';
 
 export interface JobEvent {
   type: JobEventType;
@@ -434,13 +433,6 @@ export class JobStore {
     this.#db
       .prepare('UPDATE jobs SET attachments = ? WHERE id = ?')
       .run(JSON.stringify([...merged.values()]), job.id);
-  }
-
-  /** A new preview was served for a Job waiting at content review. The Job does not move. */
-  previewRebuilt(id: string, actor: string, url: string): Job {
-    this.#require(id);
-    this.#record(id, 'preview_rebuilt', actor, url);
-    return this.update(id, { preview_url: url });
   }
 
   /** Feedback the next Phase must act on, or null if none is outstanding. */

@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises';
-import { loadConfig } from './config.ts';
+import { hasCloudflareCredentials, loadConfig } from './config.ts';
 import { Engine } from './engine/engine.ts';
 import { JobStore } from './engine/jobs.ts';
 import { loadProfile, verifySkillLinks } from './engine/load-profile.ts';
@@ -16,7 +16,10 @@ await verifySkillLinks(config.profileId);
 const jobs = new JobStore(databasePath());
 const app = createSlackApp(config.slack);
 const notifier = createNotifier(app);
-const engine = new Engine(jobs, profile, notifier);
+const engine = new Engine(jobs, profile, notifier, config.cloudflare);
+if (!hasCloudflareCredentials()) {
+  console.warn('CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set: seo Jobs will fail at the preview deploy until they are.');
+}
 
 registerHandlers(app, engine, jobs, config.slack, notifier);
 
@@ -25,8 +28,6 @@ console.log(`RankSmith is listening. Profile: ${profile.id}. Repo: ${profile.rep
 
 const resumed = engine.resume();
 if (resumed.length > 0) console.log(`Resumed ${resumed.length} job(s): ${resumed.join(', ')}`);
-const rebuilding = engine.previewRebuilds;
-if (rebuilding.length > 0) console.log(`Rebuilding ${rebuilding.length} preview(s): ${rebuilding.join(', ')}`);
 
 let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

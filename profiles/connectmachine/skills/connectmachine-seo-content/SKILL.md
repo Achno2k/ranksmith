@@ -90,8 +90,11 @@ Content phases:
 {
   "slug": "the-slug-you-published",
   "summary": "imperative one-line summary of the change",
-  "files_changed": ["src/content/blog/....json"]
+  "files_changed": ["src/content/blog/....json"],
+  "preview_path": "/blog/the-slug-you-published/"
 }
 ```
 
-`files_changed` must be a non-empty array of paths you committed.
+`files_changed` must be a non-empty array of paths you committed. `preview_path` is the site
+path of the one page the reviewer should open, with a leading slash: the page that changed
+most, or the new page when the change adds one. The preview link is built from it.

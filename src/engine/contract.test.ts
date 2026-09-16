@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { splitCsvRow, validateContract, type PhaseContract } from './contract.ts';
+import { contractFor } from './phases.ts';
 
 const RESEARCH_CONTRACT: PhaseContract = {
   files: [
@@ -20,7 +21,7 @@ const RESEARCH_CONTRACT: PhaseContract = {
   ],
 };
 
-const GOOD_MARKDOWN = [
+const RESEARCH_MARKDOWN = [
   '# Research',
   '## Decision',
   '- publish X',
@@ -43,6 +44,8 @@ async function workspace(files: Record<string, string>): Promise<string> {
   }
   return dir;
 }
+
+const GOOD_MARKDOWN = RESEARCH_MARKDOWN;
 
 const complete = {
   'docs/seo-content/2026-08-14-research.md': GOOD_MARKDOWN,
@@ -313,5 +316,37 @@ describe('checking a markdown section for a table', () => {
     const dir = await workspace({ 'r.md': '## Ahrefs Evidence\n| 1 |\n' });
 
     assert.deepEqual((await validateContract(dir, EVIDENCE)).gaps, ['r.md: missing heading "Ranked"']);
+  });
+});
+
+describe('the content contract', () => {
+  const research = 'docs/seo-content/2026-08-14-research.md';
+  // The real research contract also wants a Publish Brief section.
+  const GOOD_MARKDOWN = `${RESEARCH_MARKDOWN}\n## Publish Brief\n- write it`;
+  const result = (extra: Record<string, unknown>) =>
+    JSON.stringify({ slug: 'crm-mcp-servers-compared', summary: 'Add comparison', files_changed: ['src/x.json'], ...extra });
+
+  it('demands the page the reviewer should open, as a site path with a leading slash', async () => {
+    const dir = await workspace({
+      [research]: GOOD_MARKDOWN,
+      '.ranksmith/result.json': result({ preview_path: '/blog/crm-mcp-servers-compared/' }),
+    });
+
+    assert.deepEqual(await validateContract(dir, contractFor('content', '2026-08-14')), { ok: true });
+  });
+
+  it('rejects a missing, relative, or URL-shaped preview path', async () => {
+    for (const [extra, expected] of [
+      [{}, '.ranksmith/result.json: missing field "preview_path"'],
+      [{ preview_path: 'blog/post/' }, /field "preview_path" must match .* \(got "blog\/post\/"\)/],
+      [{ preview_path: 'https://example.com/blog/post/' }, /field "preview_path" must match/],
+    ] as const) {
+      const dir = await workspace({ [research]: GOOD_MARKDOWN, '.ranksmith/result.json': result(extra) });
+      const check = await validateContract(dir, contractFor('content_revision', '2026-08-14'));
+      assert.equal(check.ok, false);
+      const gap = check.gaps?.find((line) => line.includes('preview_path')) ?? '';
+      if (typeof expected === 'string') assert.equal(gap, expected);
+      else assert.match(gap, expected);
+    }
   });
 });

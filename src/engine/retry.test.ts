@@ -3,13 +3,14 @@ import { describe, it } from 'node:test';
 import { classifyRun, isTransient } from './retry.ts';
 
 describe('telling a passing Engine error from a real one', () => {
-  it('retries network, GitHub outage, rate limit, and tunnel errors', () => {
+  it('retries network, GitHub outage, Cloudflare outage, and rate limit errors', () => {
     for (const message of [
       'git push -u origin feat/seo-cm-006 exited 128\nfatal: unable to access: Could not resolve host: github.com',
       'gh pr create exited 1\nHTTP 502: Bad Gateway (https://api.github.com/graphql)',
       'gh pr view exited 1\nAPI rate limit exceeded for user',
       'Error: read ECONNRESET',
-      'Timed out waiting for a preview URL after 60000ms',
+      'wrangler pages deploy dist --project-name x exited 1\n[ERROR] A request to the Cloudflare API failed: HTTP 503',
+      'wrangler pages deploy dist --project-name x exited 1\nTypeError: fetch failed: connect ETIMEDOUT',
     ]) {
       assert.equal(isTransient(new Error(message)), true, message);
     }

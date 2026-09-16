@@ -17,8 +17,8 @@ const PROFILE: SiteProfile = {
   commands: {
     install: 'npm ci',
     checks: ['npm run check', 'npm run build', 'npm run parity'],
-    preview: 'npm run preview',
   },
+  preview: { project: 'ranksmith-connectmachine', outputDir: 'dist' },
   budgets: {
     webSearches: 30,
     competitorPages: 10,

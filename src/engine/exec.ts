@@ -12,6 +12,8 @@ export interface ExecOptions {
   timeoutMs?: number;
   /** Written to stdin before it is closed. */
   input?: string;
+  /** Replaces the inherited environment entirely, so build it from process.env when needed. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -33,6 +35,7 @@ export function tryRun(command: string, args: string[], options: ExecOptions = {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

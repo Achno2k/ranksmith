@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@slack/bolt": "^4.4.0"
+    "@slack/bolt": "^4.4.0",
+    "wrangler": "4.132.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

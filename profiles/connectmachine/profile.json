@@ -11,8 +11,11 @@
   },
   "commands": {
     "install": "npm ci",
-    "checks": ["npm run check", "npm run build", "npm run parity"],
-    "preview": "npm run preview"
+    "checks": ["npm run check", "npm run build", "npm run parity"]
+  },
+  "preview": {
+    "project": "ranksmith-connectmachine",
+    "outputDir": "dist"
   },
   "budgets": {
     "webSearches": 30,

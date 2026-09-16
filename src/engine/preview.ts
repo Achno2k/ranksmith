@@ -1,264 +1,125 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer } from 'node:net';
-import { setTimeout as sleep } from 'node:timers/promises';
-import { run, words } from './exec.ts';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { run, tryRun, words, type ExecResult } from './exec.ts';
+import { wranglerPath } from './paths.ts';
 import type { SiteProfile } from './profile.ts';
 
-/**
- * The public hostname of a quick tunnel. `api.trycloudflare.com` is excluded: cloudflared
- * names it in the error it prints when the tunnel request itself fails, and matching that
- * once sent reviewers a URL that answers 405 to everything.
- */
-export const TUNNEL_URL = /https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com/;
-
-/** Printed instead of a hostname when Cloudflare refused or dropped the tunnel request. */
-export const TUNNEL_FAILED = /failed to request quick Tunnel/i;
-
-/** Printed once cloudflared holds a connection to Cloudflare's edge; traffic can flow after this. */
-export const TUNNEL_REGISTERED = /Registered tunnel connection/;
-const TUNNEL_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 15 * 60_000;
+const DEPLOY_TIMEOUT_MS = 10 * 60_000;
 
-/**
- * cloudflared prints the hostname before Cloudflare serves it ("it may take some time to be
- * reachable"). Whoever looks the name up in that window, a reviewer or this Engine, gets
- * "no such name" from their resolver, and trycloudflare.com tells resolvers to keep that
- * answer for 1800 seconds. So nothing here touches the local resolver until Cloudflare's own
- * resolver, asked over HTTPS, has the record; only then is the URL probed and handed out.
- */
-const RESOLVE_TIMEOUT_MS = 120_000;
-const REACHABLE_TIMEOUT_MS = 60_000;
-const REACHABLE_POLL_MS = 3_000;
+/** Read from the environment by whoever builds the Engine; never by this module. */
+export interface CloudflareCredentials {
+  apiToken: string;
+  accountId: string;
+}
 
-export interface Preview {
+export interface PreviewDeploy {
+  /** The deployment's own permanent URL, one per upload; an older one keeps its content. */
   url: string;
-  stop: () => Promise<void>;
-}
-
-export interface PreviewOptions {
-  /** Called if the preview dies on its own, so the reviewer is not left with a dead URL. */
-  onDied?: (reason: string) => void;
 }
 
 /**
- * Builds the Job's Workspace and puts it behind an ephemeral public URL. Deliberately not
- * the shared staging environment: see docs/adr/0003.
+ * The line wrangler prints once the upload is live. The alias line that follows for a
+ * non-production branch names the branch, not the deployment, so it is not matched here.
  */
-export async function startPreview(
+export const DEPLOYMENT_COMPLETE = /Deployment complete!.*?(https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.pages\.dev)/i;
+
+/** What wrangler says when the Pages project has not been created yet. */
+const PROJECT_MISSING = /project.*not found|does not exist/i;
+
+/** Terminal colour codes, which wrangler may wrap around its lines. */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+/**
+ * Builds the Job's Workspace and uploads the static output to Cloudflare Pages. Every
+ * deployment gets its own permanent URL, so nothing has to stay alive to keep a review link
+ * working: see docs/adr/0006.
+ */
+export async function deployPreview(
   profile: SiteProfile,
   workspace: string,
-  options: PreviewOptions = {},
-): Promise<Preview> {
+  branch: string,
+  cloudflare: CloudflareCredentials,
+): Promise<PreviewDeploy> {
   for (const check of profile.commands.checks) {
     const [command, args] = words(check);
     await run(command, args, { cwd: workspace, timeoutMs: BUILD_TIMEOUT_MS });
   }
 
-  const port = await freePort();
-  const [command, args] = words(profile.commands.preview);
-  const server = spawn(command, [...args, '--', '--port', String(port)], {
-    cwd: workspace,
-    stdio: 'ignore',
-  });
+  const { project, outputDir } = profile.preview;
+  const env = { ...process.env, CLOUDFLARE_API_TOKEN: cloudflare.apiToken, CLOUDFLARE_ACCOUNT_ID: cloudflare.accountId };
+  const wrangler = (args: string[]) => tryRun(wranglerPath(), args, { cwd: workspace, env, timeoutMs: DEPLOY_TIMEOUT_MS });
+  const deploy = ['pages', 'deploy', outputDir, '--project-name', project, '--branch', branch, '--commit-dirty=true'];
 
-  let stopped = false;
-  const stop = async () => {
-    stopped = true;
-    tunnel?.kill('SIGTERM');
-    server.kill('SIGTERM');
-  };
-
-  let tunnel: ChildProcess | undefined;
-
-  try {
-    await ready(server, `preview server (${command})`);
-
-    // Quick tunnels use a random public hostname. Rewrite the origin Host header to
-    // localhost so Vite/Astro accepts it without disabling host protection or requiring
-    // every generated trycloudflare.com hostname in the website configuration.
-    tunnel = spawn(
-      'cloudflared',
-      ['tunnel', '--url', `http://localhost:${port}`, '--http-host-header', 'localhost'],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    await ready(tunnel, 'cloudflared');
-
-    const output = tail(tunnel);
-    const url = await output.waitFor(TUNNEL_URL, TUNNEL_TIMEOUT_MS, 'a preview URL');
-    await output.waitFor(TUNNEL_REGISTERED, TUNNEL_TIMEOUT_MS, 'a preview URL to register with Cloudflare');
-    output.release();
-    await waitReachable(url);
-
-    const died = (reason: string) => {
-      if (!stopped) {
-        stopped = true;
-        options.onDied?.(reason);
-      }
-    };
-    tunnel.on('close', (code) => died(`cloudflared exited ${code}`));
-    server.on('close', (code) => died(`preview server exited ${code}`));
-
-    return { url, stop };
-  } catch (error) {
-    await stop();
-    throw error;
+  let result = await wrangler(deploy);
+  // wrangler splits its complaints between the two streams, so both are read.
+  if (result.exitCode !== 0 && PROJECT_MISSING.test(`${result.stdout}\n${result.stderr}`)) {
+    // First deploy for this site: the project is created once, then the upload is repeated.
+    await createProject(project, profile.repo.baseBranch, cloudflare);
+    result = await wrangler(deploy);
   }
-}
+  if (result.exitCode !== 0) throw new Error(`wrangler ${deploy.join(' ')} ${describe(result)}\n${result.stderr.trim()}`);
 
-export interface ReachableOptions {
-  resolveTimeoutMs?: number;
-  timeoutMs?: number;
-  pollMs?: number;
-  /** Whether Cloudflare's resolver has an address for the hostname. Never the local resolver. */
-  resolve?: (host: string) => Promise<boolean>;
-  /** The HTTP status a request to the URL gets, or null when it cannot be made at all. */
-  probe?: (url: string) => Promise<number | null>;
+  const url = parseDeployOutput(`${result.stdout}\n${result.stderr}`, project);
+  if (url === null) {
+    throw new Error(`wrangler ${deploy.join(' ')} printed no deployment URL\n${result.stdout.trim().slice(-2000)}`);
+  }
+  return { url };
 }
 
 /**
- * Resolves once Cloudflare's DNS has the name and the URL answers with anything below 500
- * (Cloudflare answers 530 while the tunnel is not registered). The local resolver is asked
- * only after the record exists, so it can never cache a miss. Timeout messages are worded
- * so the retry policy treats them as temporary.
+ * Creates the Pages project over the REST API rather than `wrangler pages project create`.
+ * Since wrangler 4.13x that command "delegates to the latest version of Pages, now part of
+ * Workers": it detects the framework, runs `astro add cloudflare` and a build inside the
+ * working directory, which rewrote a Job's worktree and failed. The API call creates a
+ * classic Pages project and touches nothing on disk. `pages deploy` does not delegate.
  */
-export async function waitReachable(
-  url: string,
-  {
-    resolveTimeoutMs = RESOLVE_TIMEOUT_MS,
-    timeoutMs = REACHABLE_TIMEOUT_MS,
-    pollMs = REACHABLE_POLL_MS,
-    resolve = resolvesAtCloudflare,
-    probe = probeUrl,
-  }: ReachableOptions = {},
-): Promise<void> {
-  const host = new URL(url).hostname;
-  const resolveBy = Date.now() + resolveTimeoutMs;
-  while (!(await resolve(host))) {
-    if (Date.now() >= resolveBy) {
-      throw new Error(`Timed out waiting for a preview URL to resolve (Cloudflare DNS has no record after ${resolveTimeoutMs}ms)`);
-    }
-    await sleep(pollMs);
-  }
-
-  const deadline = Date.now() + timeoutMs;
-  let last = 'no response';
-  while (Date.now() < deadline) {
-    const status = await probe(url);
-    if (status !== null && status < 500) return;
-    last = status === null ? 'no answer' : `HTTP ${status}`;
-    await sleep(pollMs);
-  }
-
-  throw new Error(`Timed out waiting for a preview URL to become reachable (${last} after ${timeoutMs}ms)`);
-}
-
-/** DNS over HTTPS straight to 1.1.1.1: no hostname to look up, no local cache to poison. */
-async function resolvesAtCloudflare(host: string): Promise<boolean> {
-  try {
-    const response = await fetch(`https://1.1.1.1/dns-query?name=${encodeURIComponent(host)}&type=A`, {
-      headers: { accept: 'application/dns-json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const body = (await response.json()) as { Status?: number; Answer?: { type: number }[] };
-    return body.Status === 0 && (body.Answer ?? []).some((record) => record.type === 1);
-  } catch {
-    return false;
+async function createProject(project: string, productionBranch: string, cloudflare: CloudflareCredentials): Promise<void> {
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${cloudflare.accountId}/pages/projects`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cloudflare.apiToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: project, production_branch: productionBranch }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = (await response.json().catch(() => ({}))) as { success?: boolean; errors?: { message?: string }[] };
+  if (!response.ok || body.success !== true) {
+    const why = (body.errors ?? []).map((error) => error.message).filter(Boolean).join('; ') || `HTTP ${response.status}`;
+    throw new Error(`Could not create the Pages project "${project}": ${why}`);
   }
 }
 
-async function probeUrl(url: string): Promise<number | null> {
-  try {
-    const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
-    return response.status;
-  } catch {
-    return null;
-  }
-}
+const describe = (result: ExecResult): string =>
+  result.timedOut ? `timed out after ${DEPLOY_TIMEOUT_MS}ms` : `exited ${result.exitCode}`;
 
 /**
- * Resolves once a spawned child is known to have started. A missing binary surfaces as an
- * `'error'` event, which is fatal to the whole process if nobody is listening.
+ * The deployment URL out of wrangler's output, or null when it never printed one. The
+ * project name pins the host, so a URL quoted in an error for another project cannot match.
  */
-function ready(child: ChildProcess, label: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onError = (error: Error) => reject(new Error(`Could not start ${label}: ${error.message}`));
-    child.once('error', onError);
-    child.once('spawn', () => {
-      child.off('error', onError);
-      // Keep the process alive on later errors rather than crashing the engine.
-      child.on('error', () => {});
-      resolve();
-    });
-  });
+export function parseDeployOutput(text: string, project: string): string | null {
+  const plain = text.replace(ANSI, '');
+  const host = new RegExp(`^https://[a-z0-9-]+\\.${escapeRegExp(project)}\\.pages\\.dev$`, 'i');
+  const url = DEPLOYMENT_COMPLETE.exec(plain)?.[1];
+  return url !== undefined && host.test(url) ? url : null;
 }
 
-interface OutputTail {
-  /** The first match of `pattern` in everything printed so far or later. `what` names the wait in errors. */
-  waitFor(pattern: RegExp, timeoutMs: number, what: string): Promise<string>;
-  /** Stops collecting and drains the pipes, so a full one can never stall cloudflared. */
-  release(): void;
-}
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * Collects a child's output from the moment it is attached, so two consecutive waits cannot
- * miss a line that arrived between them. Every wait fails early on cloudflared's own
- * "failed to request" line or on exit: the messages are what make the retry transient.
+ * The link a reviewer opens: the changed page when the build has it, the site root when it
+ * does not. Slashes are normalised so `https://x.pages.dev/` and `blog/post` still join cleanly.
  */
-function tail(child: ChildProcess): OutputTail {
-  let seen = '';
-  let exit: number | null | undefined;
-  const checks = new Set<() => void>();
-
-  const onData = (chunk: Buffer) => {
-    seen += chunk.toString();
-    for (const check of checks) check();
-  };
-  const onClose = (code: number | null) => {
-    exit = code ?? 1;
-    for (const check of checks) check();
-  };
-  child.stdout?.on('data', onData);
-  child.stderr?.on('data', onData);
-  child.on('close', onClose);
-
-  return {
-    waitFor(pattern, timeoutMs, what) {
-      return new Promise((resolve, reject) => {
-        const done = (fn: () => void) => {
-          clearTimeout(timer);
-          checks.delete(check);
-          fn();
-        };
-        const check = () => {
-          const match = seen.match(pattern);
-          if (match) return done(() => resolve(match[0]));
-          const failed = seen.match(TUNNEL_FAILED);
-          if (failed) return done(() => reject(new Error(`cloudflared exited early: ${seen.slice(failed.index).split('\n')[0]}`)));
-          if (exit !== undefined) done(() => reject(new Error(`cloudflared exited ${exit} before printing ${what}`)));
-        };
-        const timer = setTimeout(() => done(() => reject(new Error(`Timed out waiting for ${what} after ${timeoutMs}ms`))), timeoutMs);
-        checks.add(check);
-        check();
-      });
-    },
-    release() {
-      child.stdout?.off('data', onData);
-      child.stderr?.off('data', onData);
-      child.off('close', onClose);
-      child.stdout?.resume();
-      child.stderr?.resume();
-    },
-  };
+export function previewLink(deployUrl: string, path: string | null, exists: boolean): string {
+  const root = deployUrl.replace(/\/+$/, '');
+  if (path === null || !exists) return root;
+  return `${root}/${path.replace(/^\/+/, '')}`;
 }
 
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.on('error', reject);
-    probe.listen(0, () => {
-      const address = probe.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      probe.close(() => (port ? resolve(port) : reject(new Error('Could not find a free port'))));
-    });
-  });
+/** Whether the build wrote a page for this site path: `<path>/index.html` or `<path>` as a file. */
+export async function builtPageExists(workspace: string, outputDir: string, path: string): Promise<boolean> {
+  const built = join(workspace, outputDir, path);
+  for (const candidate of [join(built, 'index.html'), built]) {
+    const info = await stat(candidate).catch(() => null);
+    if (info?.isFile()) return true;
+  }
+  return false;
 }

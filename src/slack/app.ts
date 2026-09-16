@@ -271,10 +271,6 @@ export function createNotifier(app: SlackApp): Notifier & TriageStatus {
       await finishStatus(job, 'Content and preview complete — waiting for review.');
       await post(job, messages.contentReady(job, prUrl));
     },
-    previewReady: async (job, url, prUrl) => {
-      await finishStatus(job, 'Preview rebuilt — waiting for review.');
-      await post(job, messages.previewReady(job, url, prUrl));
-    },
     marketingReady: async (job, result, reportPath, csvPath) => {
       await finishStatus(job, 'Marketing scan complete — waiting for review.');
       if (!job.slackThreadTs) throw new Error(`${job.id} has no Slack thread for its marketing report`);
@@ -391,9 +387,6 @@ export function registerHandlers(
       case 'stop':
         if (!allowed(userId)) return reply(messages.approversOnly);
         if (!(await engine.stop(job.id, userId))) await reply(messages.stopNotActive(job));
-        return;
-      case 'preview':
-        if (!(await engine.rebuildPreview(job.id, userId))) await reply(messages.previewNotAvailable(job));
         return;
     }
   };

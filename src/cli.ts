@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { loadCloudflareCredentials } from './config.ts';
 import { Engine, type Notifier } from './engine/engine.ts';
 import { JobStore, type Job } from './engine/jobs.ts';
 import { loadProfile, verifySkillLinks } from './engine/load-profile.ts';
@@ -16,7 +17,6 @@ const USAGE = `RankSmith without Slack. State is shared with the Slack runner.
   npm run job -- revert <id> [why] open a revert pull request for a done job
   npm run job -- status [id]       show live jobs, or one job's history
   npm run job -- sweep [days]      reject jobs parked at a gate for longer than days (default 14)
-  npm run job -- preview <id>      serve a fresh preview for a job waiting at content review
 `;
 
 const DEFAULT_SWEEP_DAYS = 14;
@@ -75,13 +75,6 @@ const consoleNotifier: Notifier = {
   next: npm run job -- approve ${job.id}
 `);
   },
-  previewReady: async (job, url, prUrl) => {
-    say(`${job.id} PREVIEW REBUILT`);
-    console.log(`
-  preview : ${url}
-  pull req: ${prUrl}
-`);
-  },
   merging: async (job, prUrl) => say(`${job.id} approved — auto-merge queued behind CI: ${prUrl}`),
   revertReady: async (job, prUrl) => {
     say(`${job.id} REVERT READY`);
@@ -117,7 +110,8 @@ const [command, ...rest] = process.argv.slice(2);
 await mkdir(ranksmithHome(), { recursive: true });
 const profile = await loadProfile(process.env['RANKSMITH_PROFILE'] ?? 'connectmachine');
 const jobs = new JobStore(databasePath());
-const engine = new Engine(jobs, profile, consoleNotifier);
+// Read only when a deploy happens, so a marketing scan runs without Cloudflare set up.
+const engine = new Engine(jobs, profile, consoleNotifier, loadCloudflareCredentials);
 
 const requireId = (): string => {
   const id = rest[0];
@@ -177,15 +171,6 @@ try {
       const id = requireId();
       const accepted = await engine.revert(id, 'cli', rest.slice(1).join(' ').trim() || null);
       if (!accepted) throw new Error(`${id} is not done; it is ${jobs.getJob(id)?.state}.`);
-      await engine.whenIdle();
-      break;
-    }
-
-    case 'preview': {
-      const id = requireId();
-      if (!(await engine.rebuildPreview(id, 'cli'))) {
-        throw new Error(`${id} is ${jobs.getJob(id)?.state}; only a seo job at content_review with its worktree still on disk has a preview to rebuild.`);
-      }
       await engine.whenIdle();
       break;
     }

@@ -15,6 +15,9 @@ const repoRoot = (): string => fileURLToPath(new URL('../..', import.meta.url));
 export const reviewDocPath = (jobId: string, date: string, name = 'research.md'): string =>
   join(repoRoot(), 'research', `${jobId}-${date}-${name}`);
 
+/** This repo's own wrangler, pinned in package.json. The website worktree does not carry one. */
+export const wranglerPath = (): string => join(repoRoot(), 'node_modules', '.bin', 'wrangler');
+
 export const databasePath = (): string => join(ranksmithHome(), 'ranksmith.db');
 
 export const workspacePath = (jobId: string): string => join(ranksmithHome(), 'work', jobId);

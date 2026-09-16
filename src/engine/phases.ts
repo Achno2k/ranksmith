@@ -25,6 +25,9 @@ const MARKETING_TABLES = ['Ranked Opportunities'];
 /** A URL slug as the site's router accepts it. Stored as source text: the contract is data. */
 export const SLUG_PATTERN = '^[a-z0-9]+(?:-[a-z0-9]+)*$';
 
+/** The site path of the page a reviewer should open, with a leading slash. */
+export const PREVIEW_PATH_PATTERN = '^/[A-Za-z0-9._~\\-/]*$';
+
 /** One row per person or organisation worth acting on, with the evidence beside it. */
 export const TARGET_COLUMNS = [
   'name',
@@ -86,9 +89,9 @@ export function contractFor(phase: PhaseName, date: string): PhaseContract {
       {
         path: RESULT_PATH,
         kind: 'json',
-        fields: ['slug', 'summary', 'files_changed'],
+        fields: ['slug', 'summary', 'files_changed', 'preview_path'],
         arrays: ['files_changed'],
-        patterns: { slug: SLUG_PATTERN },
+        patterns: { slug: SLUG_PATTERN, preview_path: PREVIEW_PATH_PATTERN },
       },
     ],
   };

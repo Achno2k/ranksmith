@@ -22,11 +22,11 @@ export const MAX_ATTEMPTS = 2;
 export const TRANSIENT_RETRY_DELAY_MS = 30_000;
 
 const TRANSIENT_ERROR =
-  /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|could not resolve host|connection (reset|refused|timed out)|TLS handshake|HTTP 5\d\d|\b50[234]\b|bad gateway|service unavailable|gateway time-?out|rate limit|Timed out waiting for a preview URL|cloudflared exited/i;
+  /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|could not resolve host|connection (reset|refused|timed out)|TLS handshake|HTTP 5\d\d|\b50[234]\b|bad gateway|service unavailable|gateway time-?out|rate limit/i;
 
 /**
- * Whether an Engine step (push, pull request, preview) failed for a reason that may pass on
- * its own: the network, GitHub having a moment, or a quick tunnel that did not come up. A
+ * Whether an Engine step (push, pull request, preview deploy) failed for a reason that may
+ * pass on its own: the network, GitHub or Cloudflare having a moment, or a rate limit. A
  * refusal like "a pull request already exists" is not transient; repeating it ends the same.
  */
 export const isTransient = (error: unknown): boolean => TRANSIENT_ERROR.test(String(error));

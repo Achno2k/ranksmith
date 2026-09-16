@@ -29,6 +29,10 @@ export async function loadProfile(profileId: string): Promise<SiteProfile> {
     if (!profile.repo?.[field]) throw new Error(`${path}: missing repo.${field}`);
   }
 
+  for (const field of ['project', 'outputDir'] as const) {
+    if (!profile.preview?.[field]) throw new Error(`${path}: missing preview.${field}`);
+  }
+
   return profile;
 }
 

@@ -13,7 +13,7 @@ shape is what it is.
   → RESEARCHING        claude, in a fresh worktree
   → RESEARCH_REVIEW    ● gate: Approve / Reject / reply with feedback
   → GENERATING         claude, commits to the job branch
-  → PREVIEW_BUILDING   push, open PR, build, tunnel
+  → PREVIEW_BUILDING   push, open PR, build, deploy to Cloudflare Pages
   → CONTENT_REVIEW     ● gate: Approve / Reject / reply with feedback
   → MERGING            auto-merge queued behind CI
   → DONE
@@ -33,8 +33,8 @@ scan revises the report the same way and closes on approval.
 
 A failed Job keeps its worktree. `@RankSmith retry` in its thread runs it again from the step
 that failed. The Engine's own steps (push, pull request, preview) also retry once on their
-own, 30 seconds later, when the error looks temporary: network, GitHub 5xx, rate limits, or a
-tunnel that did not come up. Anything else fails straight away.
+own, 30 seconds later, when the error looks temporary: network, GitHub or Cloudflare 5xx, or
+rate limits. Anything else fails straight away.
 
 Every other mention in a Job thread goes through a quick read-only Claude call
 (`claude-sonnet-5`) that decides whether it is a question, feedback, a revert, or a stop.
@@ -104,6 +104,11 @@ cp .env.example .env                      # then fill it in
 npm start
 ```
 
+Previews are uploaded to Cloudflare Pages, so `.env` needs `CLOUDFLARE_API_TOKEN` (an API
+token with Pages: Edit) and `CLOUDFLARE_ACCOUNT_ID`. The Pages project named in the profile
+is created on the first deploy; each Job branch gets its own permanent deployment URL, opened
+on the page the content phase changed.
+
 `link-skills.sh` moves any existing skill directory aside as `<name>.backup-<timestamp>`
 before linking. It does not delete anything.
 
@@ -129,7 +134,6 @@ npm start                              # run the Slack engine
 npm run job -- marketing [focus]       # marketing scan from the terminal
 npm run job -- status CM-002           # inspect a Job's persisted state
 npm run job -- sweep [days]            # reject Jobs parked at a gate longer than days (default 14)
-npm run job -- preview CM-002          # fresh preview URL for a Job waiting at content review
 npm test                               # node:test across the tested seams
 npm run typecheck
 bin/ranksmith-check <phase> <date>      # from a workspace root: the Phase Contract check, one gap per line
@@ -151,12 +155,6 @@ locally:
 ```bash
 tail -f ~/.ranksmith/jobs/CM-002/logs/research-1.log
 ```
-
-A preview lives only as long as the Engine process and the machine's network. When the tunnel
-dies the Job stays at content review and the thread says so. Mention `@RankSmith new preview`
-in the thread, or run `npm run job -- preview CM-002`, to serve the same worktree behind a
-fresh URL; the pull request keeps working either way. When the Engine starts it rebuilds the
-preview of every seo Job waiting at content review whose worktree is still on disk.
 
 Replace `~/.ranksmith` with `RANKSMITH_HOME` when that variable is configured. A Claude log is
 stream-json, one event per line, tool calls included; the final `result` event carries the
@@ -184,7 +182,7 @@ By agreement, tests cover the four seams where correctness is load-bearing:
 - the run queue's one-agent-at-a-time guarantee
 - prompt and argv assembly
 
-The I/O adapters — git, worktrees, preview tunnels, `gh` — are deliberately thin and
+The I/O adapters — git, worktrees, Pages deploys, `gh` — are deliberately thin and
 untested. Their failures are loud and land in Slack.
 
 ## Safety

@@ -57,8 +57,13 @@ export interface SiteProfile {
   };
   commands: {
     install: string;
+    /** Run in order before a preview deploy; the last one must leave the site in `preview.outputDir`. */
     checks: string[];
-    preview: string;
+  };
+  /** Where the built site is uploaded for review: a Cloudflare Pages project and the build's output directory. */
+  preview: {
+    project: string;
+    outputDir: string;
   };
   budgets: Budgets;
   phases: Record<PhaseName, PhaseConfig>;

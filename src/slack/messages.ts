@@ -104,12 +104,6 @@ export function contentReady(job: Job, prUrl: string) {
   return { text: `${job.id} content ready`, blocks: [section(lines.join('\n')), gate(job), hint] };
 }
 
-/** No gate buttons: the original content-ready message still carries them. */
-export const previewReady = (job: Job, url: string, prUrl: string) => ({
-  text: `${job.id} preview rebuilt: ${url}`,
-  blocks: [section([`*${job.id} — preview rebuilt*`, '', `Preview: ${url}`, `Pull request: ${prUrl}`].join('\n'))],
-});
-
 export const working = (job: Job, note: string, loader = '⠋') => ({
   text: `${loader} ${job.id}: ${note}`,
   blocks: [section(`${loader} *${job.id} is working*\n${note}`)],
@@ -211,12 +205,5 @@ export const revertCancelled = (job: Job) => ({
 export const revertNotAvailable = (job: Job) =>
   `${job.id} is \`${job.state}\`. Only a finished Job can be reverted; before that, use Reject or \`stop\`.`;
 
-export const previewNotAvailable = (job: Job) => {
-  if (job.kind === 'seo' && job.state === 'content_review') {
-    return `${job.id} is at content review but its worktree is gone, so there is nothing to serve. Review from the pull request.`;
-  }
-  return `${job.id} is \`${job.state}\`. Only a seo Job waiting at content review has a preview to rebuild.`;
-};
-
 export const triageFailed =
-  'I could not work out what you meant. Mention me again with a question, a change request, `new preview`, `stop`, or `revert`.';
+  'I could not work out what you meant. Mention me again with a question, a change request, `stop`, or `revert`.';
