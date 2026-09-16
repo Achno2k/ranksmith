@@ -13,16 +13,21 @@ export const TUNNEL_URL = /https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com/;
 
 /** Printed instead of a hostname when Cloudflare refused or dropped the tunnel request. */
 export const TUNNEL_FAILED = /failed to request quick Tunnel/i;
+
+/** Printed once cloudflared holds a connection to Cloudflare's edge; traffic can flow after this. */
+export const TUNNEL_REGISTERED = /Registered tunnel connection/;
 const TUNNEL_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * cloudflared prints the hostname before Cloudflare serves it ("it may take some time to be
- * reachable"). A link posted in that window teaches the reader's DNS resolver that the name
- * does not exist, and that answer is cached for minutes. So the URL is held back until a
- * request through it succeeds.
+ * reachable"). Whoever looks the name up in that window, a reviewer or this Engine, gets
+ * "no such name" from their resolver, and trycloudflare.com tells resolvers to keep that
+ * answer for 1800 seconds. So nothing here touches the local resolver until Cloudflare's own
+ * resolver, asked over HTTPS, has the record; only then is the URL probed and handed out.
  */
-const REACHABLE_TIMEOUT_MS = 120_000;
+const RESOLVE_TIMEOUT_MS = 120_000;
+const REACHABLE_TIMEOUT_MS = 60_000;
 const REACHABLE_POLL_MS = 3_000;
 
 export interface Preview {
@@ -78,10 +83,10 @@ export async function startPreview(
     );
     await ready(tunnel, 'cloudflared');
 
-    const url = await firstMatch(tunnel, TUNNEL_URL, TUNNEL_TIMEOUT_MS);
-    // Nobody reads cloudflared's output after this; drain it so a full pipe cannot stall it.
-    tunnel.stdout?.resume();
-    tunnel.stderr?.resume();
+    const output = tail(tunnel);
+    const url = await output.waitFor(TUNNEL_URL, TUNNEL_TIMEOUT_MS, 'a preview URL');
+    await output.waitFor(TUNNEL_REGISTERED, TUNNEL_TIMEOUT_MS, 'a preview URL to register with Cloudflare');
+    output.release();
     await waitReachable(url);
 
     const died = (reason: string) => {
@@ -101,32 +106,64 @@ export async function startPreview(
 }
 
 export interface ReachableOptions {
+  resolveTimeoutMs?: number;
   timeoutMs?: number;
   pollMs?: number;
+  /** Whether Cloudflare's resolver has an address for the hostname. Never the local resolver. */
+  resolve?: (host: string) => Promise<boolean>;
   /** The HTTP status a request to the URL gets, or null when it cannot be made at all. */
   probe?: (url: string) => Promise<number | null>;
 }
 
 /**
- * Resolves once the public URL answers with anything below 500. Cloudflare answers 530
- * while the tunnel is not yet registered, and the name may not resolve at all before that.
- * The timeout message is worded so the retry policy treats it as temporary.
+ * Resolves once Cloudflare's DNS has the name and the URL answers with anything below 500
+ * (Cloudflare answers 530 while the tunnel is not registered). The local resolver is asked
+ * only after the record exists, so it can never cache a miss. Timeout messages are worded
+ * so the retry policy treats them as temporary.
  */
 export async function waitReachable(
   url: string,
-  { timeoutMs = REACHABLE_TIMEOUT_MS, pollMs = REACHABLE_POLL_MS, probe = probeUrl }: ReachableOptions = {},
+  {
+    resolveTimeoutMs = RESOLVE_TIMEOUT_MS,
+    timeoutMs = REACHABLE_TIMEOUT_MS,
+    pollMs = REACHABLE_POLL_MS,
+    resolve = resolvesAtCloudflare,
+    probe = probeUrl,
+  }: ReachableOptions = {},
 ): Promise<void> {
+  const host = new URL(url).hostname;
+  const resolveBy = Date.now() + resolveTimeoutMs;
+  while (!(await resolve(host))) {
+    if (Date.now() >= resolveBy) {
+      throw new Error(`Timed out waiting for a preview URL to resolve (Cloudflare DNS has no record after ${resolveTimeoutMs}ms)`);
+    }
+    await sleep(pollMs);
+  }
+
   const deadline = Date.now() + timeoutMs;
   let last = 'no response';
-
   while (Date.now() < deadline) {
     const status = await probe(url);
     if (status !== null && status < 500) return;
-    last = status === null ? 'not resolvable' : `HTTP ${status}`;
+    last = status === null ? 'no answer' : `HTTP ${status}`;
     await sleep(pollMs);
   }
 
   throw new Error(`Timed out waiting for a preview URL to become reachable (${last} after ${timeoutMs}ms)`);
+}
+
+/** DNS over HTTPS straight to 1.1.1.1: no hostname to look up, no local cache to poison. */
+async function resolvesAtCloudflare(host: string): Promise<boolean> {
+  try {
+    const response = await fetch(`https://1.1.1.1/dns-query?name=${encodeURIComponent(host)}&type=A`, {
+      headers: { accept: 'application/dns-json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = (await response.json()) as { Status?: number; Answer?: { type: number }[] };
+    return body.Status === 0 && (body.Answer ?? []).some((record) => record.type === 1);
+  } catch {
+    return false;
+  }
 }
 
 async function probeUrl(url: string): Promise<number | null> {
@@ -155,39 +192,63 @@ function ready(child: ChildProcess, label: string): Promise<void> {
   });
 }
 
-function firstMatch(child: ChildProcess, pattern: RegExp, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let seen = '';
+interface OutputTail {
+  /** The first match of `pattern` in everything printed so far or later. `what` names the wait in errors. */
+  waitFor(pattern: RegExp, timeoutMs: number, what: string): Promise<string>;
+  /** Stops collecting and drains the pipes, so a full one can never stall cloudflared. */
+  release(): void;
+}
 
-    const settle = (fn: () => void) => {
-      clearTimeout(timer);
+/**
+ * Collects a child's output from the moment it is attached, so two consecutive waits cannot
+ * miss a line that arrived between them. Every wait fails early on cloudflared's own
+ * "failed to request" line or on exit: the messages are what make the retry transient.
+ */
+function tail(child: ChildProcess): OutputTail {
+  let seen = '';
+  let exit: number | null | undefined;
+  const checks = new Set<() => void>();
+
+  const onData = (chunk: Buffer) => {
+    seen += chunk.toString();
+    for (const check of checks) check();
+  };
+  const onClose = (code: number | null) => {
+    exit = code ?? 1;
+    for (const check of checks) check();
+  };
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+  child.on('close', onClose);
+
+  return {
+    waitFor(pattern, timeoutMs, what) {
+      return new Promise((resolve, reject) => {
+        const done = (fn: () => void) => {
+          clearTimeout(timer);
+          checks.delete(check);
+          fn();
+        };
+        const check = () => {
+          const match = seen.match(pattern);
+          if (match) return done(() => resolve(match[0]));
+          const failed = seen.match(TUNNEL_FAILED);
+          if (failed) return done(() => reject(new Error(`cloudflared exited early: ${seen.slice(failed.index).split('\n')[0]}`)));
+          if (exit !== undefined) done(() => reject(new Error(`cloudflared exited ${exit} before printing ${what}`)));
+        };
+        const timer = setTimeout(() => done(() => reject(new Error(`Timed out waiting for ${what} after ${timeoutMs}ms`))), timeoutMs);
+        checks.add(check);
+        check();
+      });
+    },
+    release() {
       child.stdout?.off('data', onData);
       child.stderr?.off('data', onData);
       child.off('close', onClose);
-      fn();
-    };
-
-    const onData = (chunk: Buffer) => {
-      seen += chunk.toString();
-      const match = seen.match(pattern);
-      if (match) return settle(() => resolve(match[0]));
-      // Fail now rather than at the timeout: the message is what makes the retry transient.
-      const failed = seen.match(TUNNEL_FAILED);
-      if (failed) settle(() => reject(new Error(`cloudflared exited early: ${seen.slice(failed.index).split('\n')[0]}`)));
-    };
-
-    const onClose = (code: number | null) =>
-      settle(() => reject(new Error(`cloudflared exited ${code} before printing a URL`)));
-
-    const timer = setTimeout(
-      () => settle(() => reject(new Error(`Timed out waiting for a preview URL after ${timeoutMs}ms`))),
-      timeoutMs,
-    );
-
-    child.stdout?.on('data', onData);
-    child.stderr?.on('data', onData);
-    child.on('close', onClose);
-  });
+      child.stdout?.resume();
+      child.stderr?.resume();
+    },
+  };
 }
 
 function freePort(): Promise<number> {

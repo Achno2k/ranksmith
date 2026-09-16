@@ -1,27 +1,48 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { TUNNEL_FAILED, TUNNEL_URL, waitReachable } from './preview.ts';
+import { TUNNEL_FAILED, TUNNEL_REGISTERED, TUNNEL_URL, waitReachable } from './preview.ts';
 import { isTransient } from './retry.ts';
 
 describe('holding the preview URL back until it answers', () => {
-  it('waits through unresolvable and 530 answers and returns on the first real one', async () => {
-    const answers: (number | null)[] = [null, 530, 200];
-    const seen: string[] = [];
-    await waitReachable('https://x.trycloudflare.com', {
+  it('asks Cloudflare DNS first and probes over HTTP only once the record exists', async () => {
+    const dns = [false, false, true];
+    const http: (number | null)[] = [530, 200];
+    const order: string[] = [];
+    await waitReachable('https://x.trycloudflare.com/', {
       pollMs: 1,
-      probe: async (url) => {
-        seen.push(url);
-        const next = answers.shift();
+      resolve: async (host) => {
+        order.push(`dns ${host}`);
+        return dns.shift() ?? true;
+      },
+      probe: async () => {
+        order.push('http');
+        const next = http.shift();
         return next === undefined ? 200 : next;
       },
     });
-    assert.equal(seen.length, 3);
+    assert.deepEqual(order, ['dns x.trycloudflare.com', 'dns x.trycloudflare.com', 'dns x.trycloudflare.com', 'http', 'http']);
   });
 
-  it('gives up with a temporary error so the Engine retries the preview step', async () => {
+  it('gives up on a name Cloudflare never publishes, as a temporary error', async () => {
     await assert.rejects(
-      waitReachable('https://x.trycloudflare.com', { timeoutMs: 5, pollMs: 1, probe: async () => null }),
-      (error: Error) => isTransient(error) && /not resolvable/.test(error.message),
+      waitReachable('https://x.trycloudflare.com', { resolveTimeoutMs: 5, pollMs: 1, resolve: async () => false }),
+      (error: Error) => isTransient(error) && /no record/.test(error.message),
+    );
+  });
+
+  it('gives up on a name that resolves but never answers, as a temporary error', async () => {
+    await assert.rejects(
+      waitReachable('https://x.trycloudflare.com', { timeoutMs: 5, pollMs: 1, resolve: async () => true, probe: async () => 530 }),
+      (error: Error) => isTransient(error) && /HTTP 530/.test(error.message),
+    );
+  });
+});
+
+describe('reading cloudflared output', () => {
+  it('recognises the registration line that means traffic can flow', () => {
+    assert.match(
+      'INF Registered tunnel connection connIndex=0 connection=ebe38fe6 event=0 ip=198.41.192.77 location=arn06 protocol=quic',
+      TUNNEL_REGISTERED,
     );
   });
 });
