@@ -1,7 +1,30 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { TUNNEL_FAILED, TUNNEL_URL } from './preview.ts';
+import { TUNNEL_FAILED, TUNNEL_URL, waitReachable } from './preview.ts';
 import { isTransient } from './retry.ts';
+
+describe('holding the preview URL back until it answers', () => {
+  it('waits through unresolvable and 530 answers and returns on the first real one', async () => {
+    const answers: (number | null)[] = [null, 530, 200];
+    const seen: string[] = [];
+    await waitReachable('https://x.trycloudflare.com', {
+      pollMs: 1,
+      probe: async (url) => {
+        seen.push(url);
+        const next = answers.shift();
+        return next === undefined ? 200 : next;
+      },
+    });
+    assert.equal(seen.length, 3);
+  });
+
+  it('gives up with a temporary error so the Engine retries the preview step', async () => {
+    await assert.rejects(
+      waitReachable('https://x.trycloudflare.com', { timeoutMs: 5, pollMs: 1, probe: async () => null }),
+      (error: Error) => isTransient(error) && /not resolvable/.test(error.message),
+    );
+  });
+});
 
 describe('reading the preview URL out of cloudflared', () => {
   it('takes the quick tunnel hostname', () => {

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { run, words } from './exec.ts';
 import type { SiteProfile } from './profile.ts';
 
@@ -14,6 +15,15 @@ export const TUNNEL_URL = /https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com/;
 export const TUNNEL_FAILED = /failed to request quick Tunnel/i;
 const TUNNEL_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * cloudflared prints the hostname before Cloudflare serves it ("it may take some time to be
+ * reachable"). A link posted in that window teaches the reader's DNS resolver that the name
+ * does not exist, and that answer is cached for minutes. So the URL is held back until a
+ * request through it succeeds.
+ */
+const REACHABLE_TIMEOUT_MS = 120_000;
+const REACHABLE_POLL_MS = 3_000;
 
 export interface Preview {
   url: string;
@@ -69,6 +79,10 @@ export async function startPreview(
     await ready(tunnel, 'cloudflared');
 
     const url = await firstMatch(tunnel, TUNNEL_URL, TUNNEL_TIMEOUT_MS);
+    // Nobody reads cloudflared's output after this; drain it so a full pipe cannot stall it.
+    tunnel.stdout?.resume();
+    tunnel.stderr?.resume();
+    await waitReachable(url);
 
     const died = (reason: string) => {
       if (!stopped) {
@@ -83,6 +97,44 @@ export async function startPreview(
   } catch (error) {
     await stop();
     throw error;
+  }
+}
+
+export interface ReachableOptions {
+  timeoutMs?: number;
+  pollMs?: number;
+  /** The HTTP status a request to the URL gets, or null when it cannot be made at all. */
+  probe?: (url: string) => Promise<number | null>;
+}
+
+/**
+ * Resolves once the public URL answers with anything below 500. Cloudflare answers 530
+ * while the tunnel is not yet registered, and the name may not resolve at all before that.
+ * The timeout message is worded so the retry policy treats it as temporary.
+ */
+export async function waitReachable(
+  url: string,
+  { timeoutMs = REACHABLE_TIMEOUT_MS, pollMs = REACHABLE_POLL_MS, probe = probeUrl }: ReachableOptions = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no response';
+
+  while (Date.now() < deadline) {
+    const status = await probe(url);
+    if (status !== null && status < 500) return;
+    last = status === null ? 'not resolvable' : `HTTP ${status}`;
+    await sleep(pollMs);
+  }
+
+  throw new Error(`Timed out waiting for a preview URL to become reachable (${last} after ${timeoutMs}ms)`);
+}
+
+async function probeUrl(url: string): Promise<number | null> {
+  try {
+    const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+    return response.status;
+  } catch {
+    return null;
   }
 }
 
