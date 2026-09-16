@@ -21,7 +21,7 @@ import { marketingCsvPath, marketingPath, researchPath } from './phases.ts';
 import { startPreview, type Preview } from './preview.ts';
 import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { afterFeedback, isGate, type JobKind } from './states.ts';
-import { RunQueue, StepRunner } from './queue.ts';
+import { RunQueue, StepRunner, type RunResult } from './queue.ts';
 import { classifyRun, isTransient, MAX_ATTEMPTS, TRANSIENT_RETRY_DELAY_MS, type RunOutcome } from './retry.ts';
 import { runTriage, type Triage } from './triage.ts';
 import { branchFor, createScratchWorkspace, createWorkspace, removeWorkspace } from './workspace.ts';
@@ -45,6 +45,8 @@ export interface Notifier {
   /** `prUrl` is the revert pull request, or null when the original was closed before it merged. */
   reverted(job: Job, prUrl: string | null): Promise<void>;
   revertCancelled(job: Job): Promise<void>;
+  /** A preview was rebuilt for a Job already at content review; the Gate message stays as it was. */
+  previewReady(job: Job, url: string, prUrl: string): Promise<void>;
 }
 
 export class Engine {
@@ -57,6 +59,8 @@ export class Engine {
   readonly #steps = new StepRunner();
   readonly #previews = new Map<string, Preview>();
   readonly #runs = new Map<string, Promise<void>>();
+  /** Jobs whose preview the last resume() set out to rebuild, so boot can log them. */
+  #previewRebuilds: string[] = [];
 
   constructor(jobs: JobStore, profile: SiteProfile, notify: Notifier) {
     this.#jobs = jobs;
@@ -175,7 +179,41 @@ export class Engine {
       .filter((job) => job.profile === this.#profile.id && !isGate(job.state));
 
     for (const job of stranded) this.#schedule(job.id);
+
+    // Previews died with the last process. A Job at content review has nothing else to wait
+    // for, so serve its worktree again rather than leave a dead link in the thread.
+    this.#previewRebuilds = this.#jobs
+      .liveJobs()
+      .filter((job) => job.profile === this.#profile.id && job.kind === 'seo' && job.state === 'content_review')
+      .map((job) => {
+        this.#runStep(job.id, () => this.#rebuildPreview(job.id, 'engine', { quietWhenGone: false }), (result) =>
+          this.#previewRebuildFailed(job.id, result),
+        );
+        return job.id;
+      });
+
     return stranded.map((job) => job.id);
+  }
+
+  /** The Jobs the last resume() tried to give a fresh preview. */
+  get previewRebuilds(): readonly string[] {
+    return this.#previewRebuilds;
+  }
+
+  /**
+   * Serves a Job's worktree behind a new tunnel from Slack or the CLI. False unless the Job is
+   * a seo Job at content review whose worktree is still on disk. The rebuild runs as a step of
+   * its own, never as an agent turn, so a build elsewhere does not hold it up.
+   */
+  async rebuildPreview(jobId: string, actor: string): Promise<boolean> {
+    const job = this.#jobs.getJob(jobId);
+    if (!job || job.kind !== 'seo' || job.state !== 'content_review') return false;
+    if (!(await exists(workspacePath(jobId)))) return false;
+
+    this.#runStep(jobId, () => this.#rebuildPreview(jobId, actor, { quietWhenGone: true }), (result) =>
+      this.#previewRebuildFailed(jobId, result),
+    );
+    return true;
   }
 
   /**
@@ -307,16 +345,14 @@ export class Engine {
     const job = this.#jobs.getJob(jobId);
     if (!job) return;
 
-    const previous = this.#runs.get(jobId);
-    const run = this.#steps
-      .run(async () => {
-        // One step per Job at a time. The previous step's promise never rejects.
-        await previous;
+    this.#runStep(
+      jobId,
+      async () => {
         // A retry waits inside its own step, so nothing reads the Engine as idle in between.
         if (attempt > 1) await sleep(TRANSIENT_RETRY_DELAY_MS);
         await this.#advance(jobId);
-      })
-      .then(async (result) => {
+      },
+      async (result) => {
         if (result.ok) return;
         if (this.#isStopped(jobId)) return console.error(`[${jobId}] error after the Job was stopped:`, result.error);
 
@@ -329,7 +365,23 @@ export class Engine {
         }
 
         await this.#fail(jobId, String(result.error));
+      },
+    );
+  }
+
+  /**
+   * One step per Job at a time: the work waits for the step the Job already has in flight,
+   * then `report` sees how it went. Steps do not queue behind other Jobs.
+   */
+  #runStep(jobId: string, work: () => Promise<void>, report: (result: RunResult) => Promise<void> | void): void {
+    const previous = this.#runs.get(jobId);
+    const run = this.#steps
+      .run(async () => {
+        // The previous step's promise never rejects.
+        await previous;
+        await work();
       })
+      .then(report)
       // Reporting a failure can itself fail — a Slack outage is exactly when it would.
       // Log it rather than let an unhandled rejection take the whole Engine down.
       .catch((error: unknown) => console.error(`[${jobId}] could not report failure:`, error));
@@ -492,20 +544,63 @@ export class Engine {
     if (this.#isStopped(job.id)) return;
 
     await this.#notify.working(job, 'Building a preview. This takes a few minutes.');
-    const preview = await startPreview(this.#profile, workspace, {
-      onDied: (reason) => {
-        this.#previews.delete(job.id);
-        void this.#notify
-          .working(job, `Preview went down (${reason}). Approve from the pull request, or reply to rebuild.`)
-          .catch(() => {});
-      },
-    });
-    this.#previews.set(job.id, preview);
+    const preview = await this.#servePreview(job, workspace);
     this.#jobs.update(job.id, { preview_url: preview.url });
     if (this.#isStopped(job.id)) return;
 
     const advanced = this.#jobs.phaseCompleted(job.id);
     await this.#notify.contentReady(advanced, await pullRequestUrl(this.#profile, number));
+  }
+
+  /** Builds and tunnels a worktree, and tells the thread if the tunnel later dies on its own. */
+  async #servePreview(job: Job, workspace: string): Promise<Preview> {
+    const preview = await startPreview(this.#profile, workspace, {
+      onDied: (reason) => {
+        if (this.#previews.get(job.id) === preview) this.#previews.delete(job.id);
+        void this.#notify
+          .working(
+            job,
+            `Preview went down (${reason}). Mention @RankSmith with \`new preview\` to rebuild it, or approve from the pull request.`,
+          )
+          .catch(() => {});
+      },
+    });
+    this.#previews.set(job.id, preview);
+    return preview;
+  }
+
+  /**
+   * The step behind rebuildPreview and resume(). Re-reads the Job first: the step may have
+   * waited behind another, and an approval or feedback meanwhile means there is nothing to serve.
+   */
+  async #rebuildPreview(jobId: string, actor: string, { quietWhenGone }: { quietWhenGone: boolean }): Promise<void> {
+    const job = this.#jobs.getJob(jobId);
+    if (!job || job.state !== 'content_review') return;
+
+    const workspace = workspacePath(jobId);
+    if (!(await exists(workspace))) {
+      if (!quietWhenGone) {
+        await this.#notify.working(job, 'Preview cannot be rebuilt: the worktree is gone. Review from the pull request.');
+      }
+      return;
+    }
+
+    await this.#stopPreview(jobId);
+    await this.#notify.working(job, 'Rebuilding the preview. This takes a few minutes.');
+    const preview = await this.#servePreview(job, workspace);
+    if (this.#jobs.getJob(jobId)?.state !== 'content_review') return this.#stopPreview(jobId);
+
+    const rebuilt = this.#jobs.previewRebuilt(jobId, actor, preview.url);
+    const prUrl = rebuilt.pullRequest === null ? 'unavailable' : await pullRequestUrl(this.#profile, rebuilt.pullRequest);
+    await this.#notify.previewReady(rebuilt, preview.url, prUrl);
+  }
+
+  /** A preview that would not come up leaves the Job at its Gate; the pull request still works. */
+  async #previewRebuildFailed(jobId: string, result: RunResult): Promise<void> {
+    if (result.ok) return;
+    const job = this.#jobs.getJob(jobId);
+    if (!job) return;
+    await this.#notify.working(job, `Preview could not be rebuilt (${String(result.error)}). Review from the pull request.`);
   }
 
   async #merge(job: Job): Promise<void> {
@@ -743,6 +838,12 @@ async function writeBudget(workspace: string, phase: PhaseName, profile: SitePro
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ limits, used: {} }, null, 2)}\n`);
 }
+
+const exists = (path: string): Promise<boolean> =>
+  access(path).then(
+    () => true,
+    () => false,
+  );
 
 function formatElapsed(milliseconds: number): string {
   const minutes = Math.max(1, Math.floor(milliseconds / 60_000));

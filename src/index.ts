@@ -25,6 +25,8 @@ console.log(`RankSmith is listening. Profile: ${profile.id}. Repo: ${profile.rep
 
 const resumed = engine.resume();
 if (resumed.length > 0) console.log(`Resumed ${resumed.length} job(s): ${resumed.join(', ')}`);
+const rebuilding = engine.previewRebuilds;
+if (rebuilding.length > 0) console.log(`Rebuilding ${rebuilding.length} preview(s): ${rebuilding.join(', ')}`);
 
 let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

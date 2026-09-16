@@ -89,12 +89,24 @@ async function installDependencies(profile: SiteProfile, jobId: string, dir: str
   console.log(`[${jobId}] dependencies installed and cached at ${cache}`);
 }
 
-/** `cp -c` asks for an APFS clone; on a filesystem without one it fails and a copy will do. */
+/**
+ * Asks for a filesystem clone where one exists: `-c` on macOS (APFS), `--reflink=auto` on
+ * GNU cp (a real clone on btrfs or xfs, a plain copy elsewhere). The EC2 host is Linux, so
+ * the GNU form is tried when the macOS flag is refused; a plain copy is the last resort.
+ */
 async function copyTree(source: string, destination: string): Promise<void> {
-  const clone = await tryRun('cp', ['-c', '-R', source, destination], { timeoutMs: INSTALL_TIMEOUT_MS });
-  if (clone.exitCode === 0) return;
-  await rm(destination, { recursive: true, force: true });
-  await run('cp', ['-R', source, destination], { timeoutMs: INSTALL_TIMEOUT_MS });
+  const attempts: string[][] = [
+    ['-c', '-R', source, destination],
+    ['-R', '--reflink=auto', source, destination],
+    ['-R', source, destination],
+  ];
+  for (const [index, args] of attempts.entries()) {
+    const last = index === attempts.length - 1;
+    if (last) return void (await run('cp', args, { timeoutMs: INSTALL_TIMEOUT_MS }));
+    const copy = await tryRun('cp', args, { timeoutMs: INSTALL_TIMEOUT_MS });
+    if (copy.exitCode === 0) return;
+    await rm(destination, { recursive: true, force: true });
+  }
 }
 
 const exists = (path: string): Promise<boolean> =>

@@ -129,6 +129,7 @@ npm start                              # run the Slack engine
 npm run job -- marketing [focus]       # marketing scan from the terminal
 npm run job -- status CM-002           # inspect a Job's persisted state
 npm run job -- sweep [days]            # reject Jobs parked at a gate longer than days (default 14)
+npm run job -- preview CM-002          # fresh preview URL for a Job waiting at content review
 npm test                               # node:test across the tested seams
 npm run typecheck
 bin/ranksmith-check <phase> <date>      # from a workspace root: the Phase Contract check, one gap per line
@@ -150,6 +151,12 @@ locally:
 ```bash
 tail -f ~/.ranksmith/jobs/CM-002/logs/research-1.log
 ```
+
+A preview lives only as long as the Engine process and the machine's network. When the tunnel
+dies the Job stays at content review and the thread says so. Mention `@RankSmith new preview`
+in the thread, or run `npm run job -- preview CM-002`, to serve the same worktree behind a
+fresh URL; the pull request keeps working either way. When the Engine starts it rebuilds the
+preview of every seo Job waiting at content review whose worktree is still on disk.
 
 Replace `~/.ranksmith` with `RANKSMITH_HOME` when that variable is configured. A Claude log is
 stream-json, one event per line, tool calls included; the final `result` event carries the

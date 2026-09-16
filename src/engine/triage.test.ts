@@ -38,6 +38,11 @@ describe('reading the intent of a thread mention', () => {
     assert.deepEqual(parseTriage('INTENT: feedback\nI will change the CTA.'), { intent: 'feedback', answer: '' });
   });
 
+  it('recognises a request for a fresh preview', () => {
+    assert.deepEqual(parseTriage('INTENT: preview'), { intent: 'preview', answer: '' });
+    assert.deepEqual(parseTriage('INTENT: preview\nRebuilding now.'), { intent: 'preview', answer: '' });
+  });
+
   it('returns null when the format is missing or the intent is unknown', () => {
     assert.equal(parseTriage('Sure, reverting now.'), null);
     assert.equal(parseTriage('INTENT: approve'), null);
@@ -65,5 +70,12 @@ describe('building a triage run', () => {
     assert.match(prompt, /is this on staging\?/);
     assert.match(prompt, /pull\/35, merged/);
     assert.match(prompt, /INTENT: <intent>/);
+  });
+
+  it('offers the preview intent and keeps question as the tie-break', () => {
+    const { prompt } = buildTriage({ job: JOB, text: 'link is dead', context: [], cwd: '/repo' });
+
+    assert.match(prompt, /- preview: .*preview link.*down or broken/);
+    assert.match(prompt, /If it is unclear, pick question/);
   });
 });

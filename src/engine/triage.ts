@@ -1,7 +1,7 @@
 import { run } from './exec.ts';
 import type { Job } from './jobs.ts';
 
-export const INTENTS = ['question', 'feedback', 'revert', 'stop'] as const;
+export const INTENTS = ['question', 'feedback', 'revert', 'stop', 'preview'] as const;
 
 export type Intent = (typeof INTENTS)[number];
 
@@ -63,6 +63,7 @@ export function buildTriage({ job, text, context, cwd }: TriageRequest) {
       '- feedback: asks for the research, content or report to change, including after the Job is done.',
       '- revert: asks to undo, roll back or revert work that already shipped.',
       '- stop: asks to stop or cancel the job while it is still running.',
+      '- preview: asks for a new, fresh or working preview link, or says the preview is down or broken.',
       'If it is unclear, pick question. A wrong revision costs half an hour; a wrong answer costs one follow-up.',
     ].join('\n'),
     [

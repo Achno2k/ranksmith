@@ -10,7 +10,18 @@ import {
   promptFromMention,
   threadForMention,
 } from './app.ts';
-import { contentReady, decided, feedbackNotReady, gateValue, rejected, statusLines, stopped, workingStatus } from './messages.ts';
+import {
+  contentReady,
+  decided,
+  feedbackNotReady,
+  gateValue,
+  previewNotAvailable,
+  previewReady,
+  rejected,
+  statusLines,
+  stopped,
+  workingStatus,
+} from './messages.ts';
 
 describe('native Slack status', () => {
   const job = { id: 'CM-002' } as Job;
@@ -69,6 +80,20 @@ describe('replies about feedback', () => {
 
   it('closes the door on rejected and reverted jobs', () => {
     assert.match(feedbackNotReady({ id: 'CM-002', state: 'reverted' } as Job), /closed/);
+  });
+
+  it('says why a preview cannot be rebuilt', () => {
+    assert.match(previewNotAvailable({ id: 'CM-002', kind: 'seo', state: 'merging' } as Job), /`merging`.*content review/);
+    assert.match(previewNotAvailable({ id: 'CM-002', kind: 'marketing', state: 'marketing_review' } as Job), /seo Job/);
+    assert.match(previewNotAvailable({ id: 'CM-002', kind: 'seo', state: 'content_review' } as Job), /worktree is gone/);
+  });
+
+  it('posts a rebuilt preview without a second set of gate buttons', () => {
+    const message = previewReady({ id: 'CM-002', state: 'content_review' } as Job, 'https://x.trycloudflare.com', 'https://github.com/x/y/pull/44');
+
+    assert.match(message.text, /trycloudflare/);
+    assert.ok(!message.blocks.some((block: KnownBlock) => block.type === 'actions'), 'no gate buttons');
+    assert.match(JSON.stringify(message.blocks), /pull\/44/);
   });
 
   it('tells a dropped follow-up apart from a rejected job', () => {
