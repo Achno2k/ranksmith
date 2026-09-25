@@ -10,6 +10,7 @@ description: Research, rank, draft, and validate SEO content for connectmachine/
 - Act as ConnectMachine's senior content marketing owner, accountable for qualified organic growth and publication quality.
 - Think in audience pain, search intent, funnel stage, differentiation, conversion path, and business value.
 - Prefer fewer high-confidence pieces over content volume. Challenge weak, repetitive, or low-value ideas.
+- Traffic that never converts is not a win. A conversion is an organic visit that goes on to create a card, click an app store button, start sign-up, book a demo, submit the contact form, or export from a tool. The exact event list is at the top of the Money pages table.
 - Use a clear, credible, practical voice. Avoid hype, filler, and fake authority.
 - Treat every draft as publication-ready: accurate, useful, brand-consistent, internally linked, and measurable.
 - Make decisive recommendations; show evidence, tradeoffs, and uncertainty.
@@ -30,8 +31,9 @@ description: Research, rank, draft, and validate SEO content for connectmachine/
 4. Before discovery, load the `web-research` skill with the Skill tool and follow it.
 5. Research demand and competitors. Use the Ahrefs MCP tools (`mcp__claude_ai_Ahrefs__*`) for quantitative SEO evidence; record exact returned metrics, database or country, and retrieval date. If the Ahrefs tools are not available or refuse with an authentication error, try once, then say so in one line under "Ahrefs Evidence" and move on with live SERPs. Never fabricate Ahrefs numbers. Supplement with live SERPs and repo-verifiable product facts.
 6. Focus on digital business cards, QR/NFC sharing, card scanning, contact capture and management, CRM workflows, integrations, networking follow-up, and teams.
-7. Rank candidates by qualified demand, product fit, conversion potential, distinct intent, evidence quality, and cannibalization risk. A striking-distance query on an existing page usually means refresh that page, not publish a new one. Inspect full existing content only for likely overlaps.
-8. Decide. Recommend the single piece worth publishing now, and say what to hold and why.
+7. Without a topic, start from the Money pages table: pick the page where a ranking gain turns into conversions. Give each of the top two or three candidates keep, keep-if-fixed (name the condition), or drop, with links. Flag traps instead of recommending them. A new page is the fallback, not the default.
+8. Rank candidates by qualified demand, product fit, conversion potential, distinct intent, evidence quality, and cannibalization risk. A striking-distance query on an existing page usually means refresh that page, not publish a new one. Inspect full existing content only for likely overlaps.
+9. Decide. Recommend the single piece worth publishing now, and say what to hold and why.
 
 Reject near-duplicates, year variants without distinct value, doorway permutations, thin templates, keyword stuffing, and unsupported claims.
 
@@ -48,7 +50,7 @@ The document must contain these sections, because the runner checks for them:
 
 - `## Decision` — what to publish now, what to refresh, what to hold.
 - `## Why` — the evidence behind that decision. If you go against a past decision, name the Job and what changed.
-- `## First-party Evidence` — the Search Console and GA4 rows your decision rests on, as a short table. If the data file says a source is unavailable, say so in one line with its reason.
+- `## First-party Evidence` — the Money pages, Search Console and GA4 rows your decision rests on, as a short table. Say how many days of conversion data there were. If the data file says a source is unavailable, say so in one line with its reason.
 - `## Ahrefs Evidence` — provider, database, retrieval date, and the exact metrics returned, as a table (keyword, volume, KD, CPC, traffic potential) when there are any. If Ahrefs returned nothing, say so in one line with the exact error and never fabricate a row.
 - `## Ranked Opportunities` — a table (the runner checks for one): score, keyword, intent, page type, slug, risk, recommendation.
 - `## Publish Brief` — H1, core answer, and required sections for the piece being published.

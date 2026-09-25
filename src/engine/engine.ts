@@ -23,7 +23,7 @@ import { builtPageExists, deployPreview, previewLink, type CloudflareCredentials
 import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { afterFeedback, isGate, type JobKind } from './states.ts';
 import { RunQueue, StepRunner, type RunResult } from './queue.ts';
-import { googleSource, renderSearchData, SEARCH_DATA_PATH } from './search-data.ts';
+import { googleSource, posthogSource, renderSearchData, SEARCH_DATA_PATH } from './search-data.ts';
 import { classifyRun, isTransient, MAX_ATTEMPTS, TRANSIENT_RETRY_DELAY_MS, type RunOutcome } from './retry.ts';
 import { runTriage, type Triage } from './triage.ts';
 import { branchFor, createScratchWorkspace, createWorkspace, removeWorkspace } from './workspace.ts';
@@ -710,8 +710,11 @@ export class Engine {
     const target = join(workspace, SEARCH_DATA_PATH);
     if (await access(target).then(() => true, () => false)) return;
 
-    await this.#notify.working(job, 'Pulling Search Console and GA4 data.');
-    const markdown = await renderSearchData(this.#profile.searchData, await googleSource());
+    await this.#notify.working(job, 'Pulling Search Console and conversion data.');
+    const markdown = await renderSearchData(this.#profile.searchData, {
+      google: await googleSource(),
+      posthog: posthogSource(),
+    });
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, markdown);
   }

@@ -27,7 +27,22 @@
     }
   },
   "searchData": {
-    "gscSite": "sc-domain:connectmachine.ai"
+    "gscSite": "sc-domain:connectmachine.ai",
+    "posthog": {
+      "host": "https://us.posthog.com",
+      "projectId": 603030,
+      "conversionEvents": [
+        "create_card_click",
+        "get_started_click",
+        "app_store_click",
+        "play_store_click",
+        "app_gallery_click",
+        "galaxy_store_click",
+        "book_demo_click",
+        "contact_form_submitted",
+        "tool_export"
+      ]
+    }
   },
   "phases": {
     "research": {

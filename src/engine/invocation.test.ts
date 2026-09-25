@@ -193,10 +193,12 @@ describe('building an agent run', () => {
     }
   });
 
-  it('tells research to discover a topic when none was given', () => {
+  it('starts discovery from the money pages, with a new page as the fallback', () => {
     const run = buildRun({ ...base, phase: 'research' });
 
-    assert.match(run.prompt, /rank the opportunities you find/i);
+    assert.match(run.prompt, /Find the one page worth this week\. Start from the "Money pages" table/);
+    assert.match(run.prompt, /keep, keep once one named condition is fixed, or drop/);
+    assert.match(run.prompt, /Recommend a new page only when no existing page qualifies/);
   });
 
   it('names the topic when one was given', () => {

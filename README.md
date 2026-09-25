@@ -65,14 +65,22 @@ conflicts with later changes fails and lists the conflicting files.
 Before a research Phase runs, the Engine gives the agent two things:
 
 - `.ranksmith/search-data.md`: the last 90 days of Search Console (striking-distance
-  queries at positions 4 to 20, top queries, top pages) and GA4 organic landing pages.
-  The Engine fetches it with the service account in `GOOGLE_APPLICATION_CREDENTIALS`
-  for the properties in the profile's `searchData`. A source it cannot reach is listed
-  as unavailable with the reason, and the Job carries on.
+  queries at positions 4 to 20, top queries, top pages), GA4 organic landing pages, and a
+  "Money pages" table that joins Search Console pages with PostHog conversions from organic
+  sessions. Each page gets a verdict: money page (converts, ranks 4 to 20), trap (seen a lot,
+  never converts), converts top 3, or thin data. The Engine fetches Google with the service
+  account in `GOOGLE_APPLICATION_CREDENTIALS` and PostHog with `POSTHOG_PERSONAL_API_KEY`
+  (scope `query:read`), for the properties and conversion events in the profile's
+  `searchData`. A source it cannot reach is listed as unavailable with the reason, and the
+  Job carries on.
 - A "Past decisions" section in the prompt: every earlier seo Job's topic, slug, keyword,
   what research decided, how it ended (shipped, rejected, stopped, reverted, still open), and
   what the humans said at its gates. It comes from the Engine's own database, so rejected
   research that never reached the site counts too.
+
+Without a topic, research starts from the Money pages table and picks the one existing page
+worth the week, with keep, keep-if-fixed, or drop for each candidate. A new page is the
+fallback when no page qualifies.
 
 The research document must carry a `## First-party Evidence` section quoting the rows it
 relied on, or saying why there were none.

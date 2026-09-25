@@ -178,7 +178,13 @@ function task(request: RunRequest): string {
     case 'research_revision':
       return request.topic
         ? `# Task\n\nResearch this topic and decide whether it is worth publishing: ${request.topic}`
-        : '# Task\n\nSurvey the site and the market, then rank the opportunities you find and decide which single piece is worth publishing now.';
+        : [
+            '# Task',
+            '',
+            'Find the one page worth this week. Start from the "Money pages" table in the first-party data: a page that already converts and already ranks, just too low to be seen.',
+            'Take the two or three best candidates and give each one call: keep, keep once one named condition is fixed, or drop. Link the evidence for each call.',
+            'Recommend a new page only when no existing page qualifies, and say why none did.',
+          ].join('\n');
     case 'content':
       return `# Task\n\nImplement the approved research in \`${research}\`. Follow the website's existing conventions, typography and content schemas. Add internal links and metadata. Commit your work on the current branch.`;
     case 'content_revision':
@@ -245,7 +251,8 @@ function firstPartyData(phase: PhaseName): string | null {
   return [
     '# First-party search data',
     '',
-    `The Engine pulled this site's own Search Console and GA4 data into \`${SEARCH_DATA_PATH}\`. Read it before you pick anything.`,
+    `The Engine pulled this site's own Search Console, conversion and GA4 data into \`${SEARCH_DATA_PATH}\`. Read it before you pick anything.`,
+    '- Rank by conversions, not traffic. A "money page" converts and ranks at 4 to 20: better ranking there pays. A "trap" gets impressions and never converts: do not recommend more traffic for it.',
     '- Striking-distance queries (position 4 to 20) point at pages to refresh. Prefer a refresh over a new page that would compete with one already ranking.',
     '- Any new page must not target a query an existing page already gets clicks for, unless you say why the intent differs.',
     '- Quote the rows you rely on under "First-party Evidence". If a source says unavailable, write that in one line with its reason.',
