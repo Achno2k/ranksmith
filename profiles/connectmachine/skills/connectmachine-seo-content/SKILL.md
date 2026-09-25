@@ -13,7 +13,7 @@ description: Research, rank, draft, and validate SEO content for connectmachine/
 - Use a clear, credible, practical voice. Avoid hype, filler, and fake authority.
 - Treat every draft as publication-ready: accurate, useful, brand-consistent, internally linked, and measurable.
 - Make decisive recommendations; show evidence, tradeoffs, and uncertainty.
-- You can recommend new content, change the existing, change url, slugs, reorder sections and all those things, that will boost the overall SEO of the product and the website by levaraging high performing keywords.
+- You can recommend new content, change the existing, change url, slugs, reorder sections and all those things, that will boost the overall SEO of the product and the website by leveraging high performing keywords.
 
 ## Boundary
 
@@ -26,11 +26,12 @@ description: Research, rank, draft, and validate SEO content for connectmachine/
 
 1. Read `AGENTS.md`. Read `docs/SEO_CONTENT_REFERENCE.md` if it exists; it is the inventory a previous content run left behind. If it does not exist, build the inventory yourself in step 2.
 2. Build a compact inventory from content JSON: collection, slug, title, H1, query, dek, keywords, and status. Do not load every body.
-3. Before discovery, load the `web-research` skill with the Skill tool and follow it.
-4. Research demand and competitors. Use the Ahrefs MCP tools (`mcp__claude_ai_Ahrefs__*`) for quantitative SEO evidence; record exact returned metrics, database or country, and retrieval date. If the Ahrefs tools are not available or refuse with an authentication error, try once, then say so in one line under "Ahrefs Evidence" and move on with live SERPs. Never fabricate Ahrefs numbers. Supplement with live SERPs and repo-verifiable product facts.
-5. Focus on digital business cards, QR/NFC sharing, card scanning, contact capture and management, CRM workflows, integrations, networking follow-up, and teams.
-6. Rank candidates by qualified demand, product fit, conversion potential, distinct intent, evidence quality, and cannibalization risk. Inspect full existing content only for likely overlaps.
-7. Decide. Recommend the single piece worth publishing now, and say what to hold and why.
+3. Read `.ranksmith/search-data.md` and the "Past decisions" section of your task. The first is what the site already ranks for; the second is what earlier jobs recommended and what humans shipped, rejected, or reverted, with their reasons. Both outrank your own guesses about demand.
+4. Before discovery, load the `web-research` skill with the Skill tool and follow it.
+5. Research demand and competitors. Use the Ahrefs MCP tools (`mcp__claude_ai_Ahrefs__*`) for quantitative SEO evidence; record exact returned metrics, database or country, and retrieval date. If the Ahrefs tools are not available or refuse with an authentication error, try once, then say so in one line under "Ahrefs Evidence" and move on with live SERPs. Never fabricate Ahrefs numbers. Supplement with live SERPs and repo-verifiable product facts.
+6. Focus on digital business cards, QR/NFC sharing, card scanning, contact capture and management, CRM workflows, integrations, networking follow-up, and teams.
+7. Rank candidates by qualified demand, product fit, conversion potential, distinct intent, evidence quality, and cannibalization risk. A striking-distance query on an existing page usually means refresh that page, not publish a new one. Inspect full existing content only for likely overlaps.
+8. Decide. Recommend the single piece worth publishing now, and say what to hold and why.
 
 Reject near-duplicates, year variants without distinct value, doorway permutations, thin templates, keyword stuffing, and unsupported claims.
 
@@ -46,7 +47,8 @@ Reject near-duplicates, year variants without distinct value, doorway permutatio
 The document must contain these sections, because the runner checks for them:
 
 - `## Decision` — what to publish now, what to refresh, what to hold.
-- `## Why` — the evidence behind that decision.
+- `## Why` — the evidence behind that decision. If you go against a past decision, name the Job and what changed.
+- `## First-party Evidence` — the Search Console and GA4 rows your decision rests on, as a short table. If the data file says a source is unavailable, say so in one line with its reason.
 - `## Ahrefs Evidence` — provider, database, retrieval date, and the exact metrics returned, as a table (keyword, volume, KD, CPC, traffic potential) when there are any. If Ahrefs returned nothing, say so in one line with the exact error and never fabricate a row.
 - `## Ranked Opportunities` — a table (the runner checks for one): score, keyword, intent, page type, slug, risk, recommendation.
 - `## Publish Brief` — H1, core answer, and required sections for the piece being published.

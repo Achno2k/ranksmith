@@ -15,6 +15,7 @@ import {
   revertCommit,
 } from './git.ts';
 import { buildRun } from './invocation.ts';
+import { renderLedger } from './ledger.ts';
 import type { AttachmentInput, Job, JobStore } from './jobs.ts';
 import { attachmentsDir, logPath, reviewDocPath, workspaceAttachmentsDir, workspacePath } from './paths.ts';
 import { marketingCsvPath, marketingPath, researchPath } from './phases.ts';
@@ -22,6 +23,7 @@ import { builtPageExists, deployPreview, previewLink, type CloudflareCredentials
 import { baseRef, isMarketingPhase, phaseForState, type PhaseName, type SiteProfile } from './profile.ts';
 import { afterFeedback, isGate, type JobKind } from './states.ts';
 import { RunQueue, StepRunner, type RunResult } from './queue.ts';
+import { googleSource, renderSearchData, SEARCH_DATA_PATH } from './search-data.ts';
 import { classifyRun, isTransient, MAX_ATTEMPTS, TRANSIENT_RETRY_DELAY_MS, type RunOutcome } from './retry.ts';
 import { runTriage, type Triage } from './triage.ts';
 import { branchFor, createScratchWorkspace, createWorkspace, removeWorkspace } from './workspace.ts';
@@ -373,6 +375,9 @@ export class Engine {
     await this.#mirrorAttachments(job, workspace);
     if (this.#isStopped(job.id)) return;
     const feedback = this.#jobs.pendingFeedback(job.id);
+    const research = phase === 'research' || phase === 'research_revision';
+    if (research) await this.#writeSearchData(job, workspace);
+    const ledger = research ? await renderLedger(this.#jobs, this.#profile.id, job.id) : null;
     let gaps: string[] = [];
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -393,6 +398,7 @@ export class Engine {
         attachments: job.attachments,
         // buildRun only resumes for a revision; a first pass never continues another Phase.
         resumeSessionId: job.sessionId ?? null,
+        ledger,
       });
 
       if (this.#queue.busy) {
@@ -458,7 +464,11 @@ export class Engine {
     }
 
     if (phase === 'research' || phase === 'research_revision') {
-      this.#jobs.update(job.id, { slug: String(result['slug'] ?? '') });
+      this.#jobs.update(job.id, {
+        slug: String(result['slug'] ?? ''),
+        decision: typeof result['decision'] === 'string' ? result['decision'] : null,
+        primary_keyword: typeof result['primary_keyword'] === 'string' ? result['primary_keyword'] : null,
+      });
       // The skill tells agents to commit their own work, so there is often nothing left.
       if (await hasChanges(workspace)) {
         await commitAll(workspace, `docs(seo): research for ${job.id}`);
@@ -690,6 +700,20 @@ export class Engine {
     this.#jobs.update(job.id, { branch });
 
     return workspace;
+  }
+
+  /**
+   * Once per Workspace: a revision reads the same numbers its first pass argued from. Never
+   * fails the Job; a source that could not be reached says why inside the file.
+   */
+  async #writeSearchData(job: Job, workspace: string): Promise<void> {
+    const target = join(workspace, SEARCH_DATA_PATH);
+    if (await access(target).then(() => true, () => false)) return;
+
+    await this.#notify.working(job, 'Pulling Search Console and GA4 data.');
+    const markdown = await renderSearchData(this.#profile.searchData, await googleSource());
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, markdown);
   }
 
   async #mirrorAttachments(job: Job, workspace: string): Promise<void> {

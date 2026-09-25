@@ -12,6 +12,12 @@ export const marketingCsvPath = (date: string): string => `docs/marketing/${date
 const RESEARCH_HEADINGS = ['Decision', 'Why', 'Ahrefs Evidence', 'Ranked Opportunities', 'Publish Brief'];
 
 /**
+ * Asked of research only. Content re-checks the research document, and a document approved
+ * before this heading existed must still pass there. An honest "unavailable" line passes.
+ */
+const RESEARCH_PHASE_HEADINGS = [...RESEARCH_HEADINGS.slice(0, 2), 'First-party Evidence', ...RESEARCH_HEADINGS.slice(2)];
+
+/**
  * Sections that are only evidence when they hold a table, not prose about one. Ahrefs
  * Evidence is left out on purpose: when the API returns nothing (every run since
  * 2026-08-14 hit "API units limit reached") an honest one-line report must still pass.
@@ -71,7 +77,7 @@ export function contractFor(phase: PhaseName, date: string): PhaseContract {
   if (phase === 'research' || phase === 'research_revision') {
     return {
       files: [
-        research,
+        { ...research, headings: RESEARCH_PHASE_HEADINGS },
         {
           path: RESULT_PATH,
           kind: 'json',

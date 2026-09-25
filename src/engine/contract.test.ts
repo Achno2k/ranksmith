@@ -319,6 +319,23 @@ describe('checking a markdown section for a table', () => {
   });
 });
 
+describe('the research contract', () => {
+  const research = 'docs/seo-content/2026-08-14-research.md';
+  const json = JSON.stringify({ decision: 'publish', slug: 'a-b', primary_keyword: 'a b', page_type: 'blog', why: ['x'] });
+  const brief = '\n## Publish Brief\n- write it';
+
+  it('asks research for first-party evidence, and an honest unavailable line passes', async () => {
+    const missing = await workspace({ [research]: `${RESEARCH_MARKDOWN}${brief}`, '.ranksmith/result.json': json });
+    assert.deepEqual((await validateContract(missing, contractFor('research', '2026-08-14'))).gaps, [
+      `${research}: missing heading "First-party Evidence"`,
+    ]);
+
+    const honest = `${RESEARCH_MARKDOWN}${brief}\n## First-party Evidence\nUnavailable: key not set`;
+    const dir = await workspace({ [research]: honest, '.ranksmith/result.json': json });
+    assert.deepEqual(await validateContract(dir, contractFor('research_revision', '2026-08-14')), { ok: true });
+  });
+});
+
 describe('the content contract', () => {
   const research = 'docs/seo-content/2026-08-14-research.md';
   // The real research contract also wants a Publish Brief section.

@@ -26,6 +26,9 @@
       "pagesFetched": 25
     }
   },
+  "searchData": {
+    "gscSite": "sc-domain:connectmachine.ai"
+  },
   "phases": {
     "research": {
       "backend": "claude",

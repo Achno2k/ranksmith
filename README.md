@@ -60,6 +60,23 @@ Rejecting the revert closes its PR and returns the Job to `done`. If the origina
 merged yet, the Engine closes it and the Job goes straight to `reverted`. A revert that
 conflicts with later changes fails and lists the conflicting files.
 
+## What research starts from
+
+Before a research Phase runs, the Engine gives the agent two things:
+
+- `.ranksmith/search-data.md`: the last 90 days of Search Console (striking-distance
+  queries at positions 4 to 20, top queries, top pages) and GA4 organic landing pages.
+  The Engine fetches it with the service account in `GOOGLE_APPLICATION_CREDENTIALS`
+  for the properties in the profile's `searchData`. A source it cannot reach is listed
+  as unavailable with the reason, and the Job carries on.
+- A "Past decisions" section in the prompt: every earlier seo Job's topic, slug, keyword,
+  what research decided, how it ended (shipped, rejected, stopped, reverted, still open), and
+  what the humans said at its gates. It comes from the Engine's own database, so rejected
+  research that never reached the site counts too.
+
+The research document must carry a `## First-party Evidence` section quoting the rows it
+relied on, or saying why there were none.
+
 ## Marketing scans
 
 A second kind of Job. It never touches the site: the output is a report, not a pull request.

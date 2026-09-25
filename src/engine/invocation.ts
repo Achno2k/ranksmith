@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { Attachment } from './jobs.ts';
 import { contractFor, marketingPath, researchPath } from './phases.ts';
+import { SEARCH_DATA_PATH } from './search-data.ts';
 import { isMarketingPhase, type PhaseName, type SiteProfile } from './profile.ts';
 
 /** This checkout, so the agent's check command and the budget hook point at real files. */
@@ -38,6 +39,8 @@ export interface RunRequest {
   attachments: Attachment[];
   /** The Claude session the Job's last Phase ran in. Only a revision picks it up. */
   resumeSessionId?: string | null;
+  /** Research only: what earlier seo Jobs decided and how humans answered, as markdown. */
+  ledger?: string | null;
 }
 
 export interface AgentInvocation {
@@ -156,6 +159,8 @@ function buildPrompt(request: RunRequest): string {
     task(request),
     isMarketingPhase(phase) ? marketingBoundaries(profile) : boundaries(profile),
     budgets(request),
+    firstPartyData(request.phase),
+    pastDecisions(request),
     required(phase, date),
     attachments(request.attachments),
     humanFeedback(request.feedback),
@@ -231,6 +236,33 @@ function budgets(request: RunRequest): string | null {
     '',
     `Stay within ${webSearches} web searches, ${competitorPages} competitor pages, and ${ahrefsOperations} Ahrefs operations.`,
     'Record what you actually used in the result file. If a budget is not enough, say so rather than quietly exceeding it.',
+  ].join('\n');
+}
+
+function firstPartyData(phase: PhaseName): string | null {
+  if (!isResearch(phase)) return null;
+
+  return [
+    '# First-party search data',
+    '',
+    `The Engine pulled this site's own Search Console and GA4 data into \`${SEARCH_DATA_PATH}\`. Read it before you pick anything.`,
+    '- Striking-distance queries (position 4 to 20) point at pages to refresh. Prefer a refresh over a new page that would compete with one already ranking.',
+    '- Any new page must not target a query an existing page already gets clicks for, unless you say why the intent differs.',
+    '- Quote the rows you rely on under "First-party Evidence". If a source says unavailable, write that in one line with its reason.',
+  ].join('\n');
+}
+
+function pastDecisions(request: RunRequest): string | null {
+  if (!isResearch(request.phase) || !request.ledger) return null;
+
+  return [
+    '# Past decisions',
+    '',
+    'Every earlier research Job for this site, what it recommended, and what the humans did. Treat rejections, reverts and their reasons as standing guidance.',
+    '- Do not recommend a topic, slug or keyword already shipped, rejected, or held here unless something changed. If you do, name the Job and the new evidence in "Why".',
+    '- A topic still open in another Job is taken. Pick something else or build on it.',
+    '',
+    request.ledger,
   ].join('\n');
 }
 

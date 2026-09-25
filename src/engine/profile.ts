@@ -1,3 +1,4 @@
+import type { SearchDataConfig } from './search-data.ts';
 import type { JobState } from './states.ts';
 
 /** The Phases that hand work to an agent. Preview and merge are the Engine's own work. */
@@ -66,6 +67,8 @@ export interface SiteProfile {
     outputDir: string;
   };
   budgets: Budgets;
+  /** Where research's first-party evidence comes from. Optional: without it the report says so. */
+  searchData?: SearchDataConfig;
   phases: Record<PhaseName, PhaseConfig>;
 }
 

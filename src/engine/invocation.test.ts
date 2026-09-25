@@ -71,6 +71,23 @@ const base = {
   attachments: [] as { name: string; mimetype: string }[],
 };
 
+describe('what research is told beyond the task', () => {
+  it('points research at the first-party data and hands it the ledger', () => {
+    const prompt = buildRun({ ...base, phase: 'research', ledger: '- CM-003 (2026-08-24) · rejected, not shipped' }).prompt;
+
+    assert.match(prompt, /# First-party search data\n\n.*`\.ranksmith\/search-data\.md`/);
+    assert.match(prompt, /# Past decisions[\s\S]*- CM-003 \(2026-08-24\) · rejected, not shipped/);
+  });
+
+  it('leaves both out of content and marketing, and the ledger out when there is none', () => {
+    for (const phase of ['content', 'marketing'] as const) {
+      const prompt = buildRun({ ...base, phase, ledger: '- CM-003' }).prompt;
+      assert.doesNotMatch(prompt, /# First-party search data|# Past decisions/, phase);
+    }
+    assert.doesNotMatch(buildRun({ ...base, phase: 'research', ledger: null }).prompt, /# Past decisions/);
+  });
+});
+
 describe('building an agent run', () => {
   it('sends research to Codex in the job workspace', () => {
     const run = buildRun({ ...base, phase: 'research' });

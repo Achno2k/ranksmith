@@ -47,6 +47,9 @@ export interface Job {
   followUp: boolean;
   /** During a follow-up, the pull request whose merge is live. Restored if the follow-up is dropped. */
   shippedPullRequest: number | null;
+  /** What research recommended, from its result file. Later research reads it in the ledger. */
+  decision?: string | null;
+  primaryKeyword?: string | null;
 }
 
 export interface NewJob {
@@ -95,6 +98,8 @@ interface JobRow {
   session_id: string | null;
   follow_up: number | null;
   shipped_pull_request: number | null;
+  decision: string | null;
+  primary_keyword: string | null;
 }
 
 interface EventRow {
@@ -121,6 +126,8 @@ const toJob = (row: JobRow): Job => ({
   sessionId: row.session_id ?? null,
   followUp: row.follow_up === 1,
   shippedPullRequest: row.shipped_pull_request ?? null,
+  decision: row.decision ?? null,
+  primaryKeyword: row.primary_keyword ?? null,
 });
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -171,7 +178,9 @@ export class JobStore {
         kind TEXT NOT NULL DEFAULT 'seo',
         session_id TEXT,
         follow_up INTEGER NOT NULL DEFAULT 0,
-        shipped_pull_request INTEGER
+        shipped_pull_request INTEGER,
+        decision TEXT,
+        primary_keyword TEXT
       );
       CREATE TABLE IF NOT EXISTS job_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -218,8 +227,14 @@ export class JobStore {
       // Already present.
     }
 
-    // Databases created before follow-ups existed are missing these columns.
-    for (const column of ['follow_up INTEGER NOT NULL DEFAULT 0', 'shipped_pull_request INTEGER']) {
+    // Databases created before follow-ups existed are missing the first two columns.
+    // Databases created before the decisions ledger are missing the last two.
+    for (const column of [
+      'follow_up INTEGER NOT NULL DEFAULT 0',
+      'shipped_pull_request INTEGER',
+      'decision TEXT',
+      'primary_keyword TEXT',
+    ]) {
       try {
         this.#db.exec(`ALTER TABLE jobs ADD COLUMN ${column}`);
       } catch {
@@ -269,10 +284,29 @@ export class JobStore {
     return rows.map(toJob);
   }
 
+  /** Every seo Job this profile has run, oldest first. The ledger research reads is built from these. */
+  seoJobs(profile: string): Job[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM jobs WHERE profile = ? AND kind = 'seo' ORDER BY seq")
+      .all(profile) as unknown as JobRow[];
+    return rows.map(toJob);
+  }
+
   update(
     id: string,
     fields: Partial<
-      Pick<JobRow, 'slack_thread_ts' | 'slug' | 'branch' | 'pull_request' | 'preview_url' | 'revert_pull_request' | 'session_id'>
+      Pick<
+        JobRow,
+        | 'slack_thread_ts'
+        | 'slug'
+        | 'branch'
+        | 'pull_request'
+        | 'preview_url'
+        | 'revert_pull_request'
+        | 'session_id'
+        | 'decision'
+        | 'primary_keyword'
+      >
     >,
   ): Job {
     const entries = Object.entries(fields);
